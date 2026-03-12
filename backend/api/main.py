@@ -2,6 +2,7 @@
 import datetime
 import json
 import logging
+from typing import AsyncGenerator, Dict, Union
 
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from starlette.middleware.cors import CORSMiddleware
@@ -15,7 +16,17 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-async def init_kafka_producer():
+async def init_kafka_producer() -> AIOKafkaProducer:
+    """
+    Initialize a Kafka producer
+
+    This function initializes a Kafka producer using the KAFKA_BOOTSTRAP_SERVERS
+    environment variable and a value serializer that encodes values as JSON and
+    then as UTF-8 bytes.
+
+    Returns:
+        AIOKafkaProducer: The initialized Kafka producer
+    """
     producer = AIOKafkaProducer(
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
         value_serializer=lambda v: json.dumps(v).encode('utf-8')
@@ -23,14 +34,38 @@ async def init_kafka_producer():
     await producer.start()
     return producer
 
-# Проверка API‑ключа
-async def verify_api_key(x_api_key: str = Header(None)):
+async def verify_api_key(x_api_key: str = Header(None)) -> Dict[str, Union[bool, str]]:
+    """
+    Verify the API key provided in the X-API-KEY header.
+
+    If the API key is invalid (i.e., it does not match the VALID_API_KEY
+    environment variable), an HTTPException is raised with a status code of 403 and
+    the detail "Invalid API Key".
+
+    If the API key is valid, a dictionary is returned with the key "is_valid" set to True
+    and the key "project_id" set to "demo-project".
+
+    Args:
+        x_api_key (str): The API key provided in the X-API-KEY header.
+
+    Returns:
+        Dict[str, Union[bool, str]]: A dictionary with the result of the API key verification.
+    """
     if not x_api_key or x_api_key != VALID_API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API Key")
     return {"is_valid": True, "project_id": "demo-project"}
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncGenerator[Dict[str, AIOKafkaProducer], None]:
+    """ Context manager for FastAPI App
+            - Starts Kafka producer and close it after the app is stopped
+
+    Args:
+        app (FastAPI): FastAPI app
+
+    Yields:
+        AsyncGenerator: Dict with kafka producer to be included in the all requests states
+    """
     producer = await init_kafka_producer()
     logger.info("Kafka producer started")
 

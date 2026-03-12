@@ -58,32 +58,7 @@ services:
       retries: 5
     restart: unless-stopped
 
-
-  redis:
-    image: redis:7
-    container_name: analightics-redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
-    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
-
-
-  minio:
-    image: minio/minio:latest
-    container_name: analightics-minio
-    ports:
-      - "9002:9000"
-      - "9001:9001"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD}
-    volumes:
-      - minio_data:/data
-    command: server /data --console-address ":9001"
-
 volumes:
   postgres_data:
   clickhouse_data:
   kafka_data:
-  minio_data:
