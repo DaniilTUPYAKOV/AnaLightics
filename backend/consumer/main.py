@@ -7,7 +7,6 @@ from typing import List, Dict
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 import clickhouse_connect
 
-# Добавь DLQ_TOPIC в конфиг или тут
 from backend.model.config import (
     KAFKA_BOOTSTRAP_SERVERS, 
     EVENT_TOPIC,
@@ -15,6 +14,9 @@ from backend.model.config import (
     CLICKHOUSE_HOST, 
     CLICKHOUSE_PORT, 
     CLICKHOUSE_TABLE,
+    CLICKHOUSE_DB,
+    CLICKHOUSE_USER,
+    CLICKHOUSE_PASSWORD,
     CONSUMER_GROUP_ID,
     CONSUMER_MAX_RETRIES,
     CONSUMER_RETRY_DELAY,
@@ -44,6 +46,9 @@ class ClickHouseWriter:
         self.client = clickhouse_connect.get_client(
             host=CLICKHOUSE_HOST, 
             port=CLICKHOUSE_PORT,
+            username=CLICKHOUSE_USER,
+            password=CLICKHOUSE_PASSWORD,
+            database=CLICKHOUSE_DB,
             connect_timeout=10,
             send_receive_timeout=30
         )

@@ -9,7 +9,7 @@ from aiokafka import AIOKafkaProducer
 from contextlib import asynccontextmanager
 
 from backend.model.schemas import Event, APIKeyCheck
-from backend.model.config import KAFKA_BOOTSTRAP_SERVERS, EVENT_TOPIC, VALID_API_KEY
+from backend.model.config import KAFKA_BOOTSTRAP_SERVERS, EVENT_TOPIC, API_KEY
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ app.add_middleware(
 
 
 async def verify_api_key(x_api_key: str = Header(None)) -> Dict[str, Union[bool, str]]:
-    if not x_api_key or x_api_key != VALID_API_KEY:
+    if not x_api_key or x_api_key != API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API Key")
     return {"is_valid": True, "project_id": "demo-project"}
 
