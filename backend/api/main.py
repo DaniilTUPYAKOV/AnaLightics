@@ -9,7 +9,11 @@ from aiokafka import AIOKafkaProducer
 from contextlib import asynccontextmanager
 
 from backend.model.schemas import Event, APIKeyCheck
-from backend.model.config import KAFKA_BOOTSTRAP_SERVERS, EVENT_TOPIC, API_KEY
+from backend.model.config import KAFKA_BOOTSTRAP_SERVERS, EVENT_TOPIC
+
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from backend.db.postgres import get_db, Project
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -45,10 +49,22 @@ app.add_middleware(
 )
 
 
-async def verify_api_key(x_api_key: str = Header(None)) -> Dict[str, Union[bool, str]]:
-    if not x_api_key or x_api_key != API_KEY:
-        raise HTTPException(status_code=403, detail="Invalid API Key")
-    return {"is_valid": True, "project_id": "demo-project"}
+async def verify_api_key(
+    x_api_key: str = Header(None), 
+    db: AsyncSession = Depends(get_db)
+) -> Dict[str, Union[bool, str]]:
+    
+    if not x_api_key:
+        raise HTTPException(status_code=403, detail="API Key is missing")
+    
+    stmt = select(Project).where(Project.api_key == x_api_key, Project.is_active == True)
+    result = await db.execute(stmt)
+    project = result.scalar_one_or_none()
+
+    if not project:
+        raise HTTPException(status_code=403, detail="Invalid or inactive API Key")
+    
+    return {"is_valid": True, "project_id": project.id}
 
 
 async def get_kafka_producer(request: Request) -> AIOKafkaProducer:

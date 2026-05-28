@@ -1,6 +1,12 @@
+import asyncio
 import clickhouse_connect
 from clickhouse_connect.driver.client import Client
 from clickhouse_connect.driver.exceptions import DatabaseError
+from typing import Type, get_origin, get_args, Union
+import datetime
+from pydantic import BaseModel
+from sqlalchemy import select
+
 from backend.model.schemas import Event
 from backend.model.config import (
     CLICKHOUSE_HOST,
@@ -10,9 +16,8 @@ from backend.model.config import (
     CLICKHOUSE_PASSWORD,
     CLICKHOUSE_USER
 )
-from typing import Type, get_origin, get_args, Union
-import datetime
-from pydantic import BaseModel
+
+from backend.db.postgres import engine, Base, Project, AsyncSessionLocal
 
 TYPE_MAPPING = {
     str: "String",
@@ -26,19 +31,9 @@ TYPE_MAPPING = {
 def get_clickhouse_type(python_type: type) -> str:
     """
     Returns the ClickHouse type that corresponds to the given Python type.
-
-    If the given type is a Union and contains None, it returns a Nullable type
-    with the inner type being the first non-None type in the Union.
-
-    Args:
-        python_type (type): The Python type to convert
-
-    Returns:
-        str: The ClickHouse type that corresponds to the given Python type
     """
     if get_origin(python_type) is Union and type(None) in get_args(python_type):
-        inner_type = [t for t in get_args(
-            python_type) if t is not type(None)][0]
+        inner_type = [t for t in get_args(python_type) if t is not type(None)][0]
         return f"Nullable({TYPE_MAPPING.get(inner_type, 'String')})"
     return TYPE_MAPPING.get(python_type, "String")
 
@@ -46,19 +41,6 @@ def get_clickhouse_type(python_type: type) -> str:
 def create_table_sql(model: Type[BaseModel], table_name: str) -> str:
     """
     Creates a ClickHouse SQL query to create a table based on the given BaseModel.
-
-    The query will include all fields from the BaseModel, as well as two additional fields:
-    "project_id" with a default value of "unknown", and "received_at" with a default value of now().
-
-    The table will use the MergeTree engine, and will be partitioned by the year and month of the "received_at" field.
-    The table will be ordered by the "event_type" and "timestamp" fields.
-
-    Args:
-        model (Type[BaseModel]): The BaseModel to create a table for
-        table_name (str): The name of the table to create
-
-    Returns:
-        str: The ClickHouse SQL query to create the table
     """
     columns = []
 
@@ -87,15 +69,6 @@ def create_table_sql(model: Type[BaseModel], table_name: str) -> str:
 def migrate_table(client: Client, model: Type[BaseModel], table_name: str) -> None:
     """
     Migrates a ClickHouse table to match the given BaseModel.
-
-    First, attempts to describe the table. If the table does not exist, creates it with the given BaseModel.
-
-    Then, checks each field in the BaseModel to see if it exists in the table. If a field does not exist, adds it to the table with the corresponding ClickHouse type.
-
-    Args:
-        client (Client): The ClickHouse client to use
-        model (Type[BaseModel]): The BaseModel to migrate the table to
-        table_name (str): The name of the table to migrate
     """
     try:
         result = client.query(f"DESCRIBE TABLE {table_name}")
@@ -112,18 +85,37 @@ def migrate_table(client: Client, model: Type[BaseModel], table_name: str) -> No
             client.command(alter_query)
 
 
-def main():
+async def init_postgres():
     """
-    Main entry point for the script.
-
-    Creates the ClickHouse database if it does not exist, then migrates the given table to match the Event model.
-
-    Args:
-        None
-
-    Returns:
-        None
+    Инициализирует PostgreSQL: создает таблицы и добавляет демо-проект.
     """
+    print("Initializing PostgreSQL...")
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with AsyncSessionLocal() as session:
+        stmt = select(Project).where(Project.id == "demo-project")
+        result = await session.execute(stmt)
+        
+        if not result.scalar_one_or_none():
+            demo_project = Project(
+                id="demo-project",
+                name="Demo Website",
+                api_key="secret-demo-key-123"
+            )
+            session.add(demo_project)
+            await session.commit()
+            print("Demo project 'demo-project' created in PostgreSQL.")
+        else:
+            print("Demo project already exists in PostgreSQL.")
+
+
+def init_clickhouse():
+    """
+    Инициализирует ClickHouse: создает БД и накатывает миграции.
+    """
+    print("Initializing ClickHouse...")
     client = clickhouse_connect.get_client(
         host=CLICKHOUSE_HOST,
         port=CLICKHOUSE_PORT,
@@ -132,7 +124,29 @@ def main():
     )
     client.command(f"CREATE DATABASE IF NOT EXISTS {CLICKHOUSE_DB}")
     migrate_table(client, Event, CLICKHOUSE_TABLE)
+    print("ClickHouse initialized successfully.")
+
+
+async def main():
+    """
+    Main entry point for the script.
+    """
+    print("Starting database initialization...")
+
+    try:
+        await init_postgres()
+    except Exception as e:
+        print(f"Error initializing PostgreSQL: {e}")
+        raise e
+
+    try:
+        init_clickhouse()
+    except Exception as e:
+        print(f"Error initializing ClickHouse: {e}")
+        raise e
+
+    print("All databases initialized successfully!")
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

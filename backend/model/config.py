@@ -11,9 +11,6 @@ KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "nokafka")
 EVENT_TOPIC = os.getenv("EVENT_TOPIC", "noevents")
 DLQ_TOPIC = os.getenv("DLQ_TOPIC", "noldq")
 
-# TODOж Получать из БД
-API_KEY = os.getenv("API_KEY", "nokey")
-
 # ClickHouse
 CLICKHOUSE_HOST = os.getenv("CLICKHOUSE_HOST", "noclickhouse")
 CLICKHOUSE_PORT = os.getenv("CLICKHOUSE_PORT", "noclickhouseport")
