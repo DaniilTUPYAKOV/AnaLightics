@@ -24,7 +24,7 @@ class Project(Base):
     name = Column(String, nullable=False)
     api_key = Column(String, unique=True, index=True, nullable=False)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.datetime.now(datetime.timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(datetime.timezone.utc))
 
 # Dependency для FastAPI
 async def get_db():
