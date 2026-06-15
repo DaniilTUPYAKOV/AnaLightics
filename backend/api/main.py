@@ -1,19 +1,29 @@
 import datetime
 import json
 import logging
-from typing import AsyncGenerator, Dict, Union
+from typing import AsyncGenerator, Annotated
 
-from fastapi import FastAPI, HTTPException, Depends, Header, Request
+from fastapi import FastAPI, Depends, Request, Security
+from fastapi.security import APIKeyHeader
+from aiokafka.errors import KafkaConnectionError, TimeoutError
 from starlette.middleware.cors import CORSMiddleware
 from aiokafka import AIOKafkaProducer
 from contextlib import asynccontextmanager
 
+from backend.api.exceptions import (
+    ForbiddenError,
+    GatewayTimeoutError,
+    InternalKafkaError,
+    ServiceUnavailableError,
+    UnauthorizedError,
+)
+from backend.api.model import ProjectContext
 from backend.model.schemas import Event, APIKeyCheck
 from backend.model.config import KAFKA_BOOTSTRAP_SERVERS, EVENT_TOPIC
+from backend.repositories import projects
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from backend.db.postgres import get_db, Project
+from backend.db.postgres import get_db
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -24,7 +34,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     producer = AIOKafkaProducer(
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-        value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+        value_serializer=lambda v: json.dumps(v).encode("utf-8"),
         acks=0,
     )
     await producer.start()
@@ -38,6 +48,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await producer.stop()
         logger.info("Kafka producer stopped")
 
+
 app = FastAPI(title="Analytics API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
@@ -48,52 +59,68 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
-async def verify_api_key(
-    x_api_key: str = Header(None), 
-    db: AsyncSession = Depends(get_db)
-) -> Dict[str, Union[bool, str]]:
-    
-    if not x_api_key:
-        raise HTTPException(status_code=403, detail="API Key is missing")
-    
-    stmt = select(Project).where(Project.api_key == x_api_key, Project.is_active == True)
-    result = await db.execute(stmt)
-    project = result.scalar_one_or_none()
 
-    if not project:
-        raise HTTPException(status_code=403, detail="Invalid or inactive API Key")
-    
-    return {"is_valid": True, "project_id": project.id}
+async def get_current_project(
+    api_key: Annotated[str | None, Security(api_key_header)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ProjectContext:
+    if api_key is None:
+        raise UnauthorizedError("API key is required")
+
+    project = await projects.get_active_project_by_api_key(db, api_key)
+
+    if project is None or not project.is_active:
+        raise ForbiddenError("Invalid or inactive API key")
+
+    return ProjectContext(
+        project_id=project.id,
+        api_key_id=project.api_key_id,
+        rate_limit_per_minute=project.rate_limit_per_minute,
+    )
 
 
 async def get_kafka_producer(request: Request) -> AIOKafkaProducer:
     producer = request.app.state.producer
     if not producer:
-        raise HTTPException(status_code=500, detail="Kafka producer not ready")
+        raise ServiceUnavailableError("Kafka producer not ready")
     return producer
 
 
 @app.post("/track", response_model=APIKeyCheck)
 async def track_event(
     event: Event,
-    api_key_result: dict = Depends(verify_api_key),
-    producer: AIOKafkaProducer = Depends(get_kafka_producer)
+    project_context: Annotated[ProjectContext, Depends(get_current_project)],
+    producer: Annotated[AIOKafkaProducer, Depends(get_kafka_producer)],
 ):
-    event_dict = event.model_dump()
-
     message = {
-        "event": event_dict,
-        "project_id": api_key_result["project_id"],
+        "event": event.model_dump(),
+        "project_id": project_context.project_id,
         "received_at": datetime.datetime.now().isoformat(),
     }
 
     try:
-        await producer.send_and_wait(EVENT_TOPIC, message)
-        return {"is_valid": True, "project_id": api_key_result["project_id"]}
+        await producer.send_and_wait(EVENT_TOPIC, message, timeout_ms=5000)
+        return {
+            "is_valid": True,
+            "project_id": project_context.project_id,
+        }
+    except KafkaConnectionError as e:
+        logger.warning(
+            "Kafka connection lost: %s", e, exc_info=True, extra={"topic": EVENT_TOPIC}
+        )
+        raise ServiceUnavailableError("Unable to connect to Kafka cluster") from e
+    except TimeoutError as e:
+        logger.warning(
+            "Kafka send timed out: %s", e, exc_info=True, extra={"topic": EVENT_TOPIC}
+        )
+        raise GatewayTimeoutError("Request to Kafka timed out") from e
     except Exception as e:
-        logger.error(f"Kafka send failed: {e}")
-        raise HTTPException(status_code=500, detail="Failed to send event")
+        logger.error(
+            "Unexpected Kafka error: %s", e, exc_info=True, extra={"topic": EVENT_TOPIC}
+        )
+        raise InternalKafkaError("Internal error while sending event to Kafka") from e
 
 
 @app.get("/health")
