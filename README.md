@@ -172,9 +172,10 @@ CONSUMER_FLUSH_INTERVAL=5.0
 
 API_PORT=8000
 API_KEY=secret-demo-key-123
+API_KEY_HASH_SECRET=replace_with_a_long_random_secret
 ```
 
-> При инициализации создается demo project с project id `00000000-0000-0000-0000-000000000001` и API key: `secret-demo-key-123`.
+> При инициализации создается demo project с project id `00000000-0000-0000-0000-000000000001` и API key из `API_KEY`. В PostgreSQL хранится не ключ, а HMAC-SHA256 hash с секретом `API_KEY_HASH_SECRET`.
 
 ### 3. Запустить проект
 
@@ -297,6 +298,43 @@ curl -X POST http://localhost:8000/track \
   "project_id": "00000000-0000-0000-0000-000000000001"
 }
 ```
+
+---
+
+### Создание API-ключа
+
+```http
+POST /projects/{project_id}/api-keys
+```
+
+Headers:
+
+```http
+Content-Type: application/json
+x-api-key: secret-demo-key-123
+```
+
+Body:
+
+```json
+{
+  "name": "Production tracking key"
+}
+```
+
+Успешный ответ:
+
+```json
+{
+  "id": "8e558dd8-2fd7-4db4-b9b8-8628517da5de",
+  "project_id": "00000000-0000-0000-0000-000000000001",
+  "name": "Production tracking key",
+  "key_prefix": "ak_live_abc12345",
+  "api_key": "ak_live_abc12345..."
+}
+```
+
+Полный `api_key` возвращается только один раз при создании. В PostgreSQL хранится HMAC-SHA256 hash и безопасный `key_prefix`; авторизация сначала ищет кандидатов по префиксу, а затем проверяет полный ключ по hash.
 
 ---
 

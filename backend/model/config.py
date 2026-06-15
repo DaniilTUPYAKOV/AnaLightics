@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     # PostgreSQL
     db_url: str = "nopostgresql"
 
+    # API
+    api_key: str = "secret-demo-key-123"
+    api_key_hash_secret: str = "dev-api-key-hash-secret"
+
     # Kafka
     kafka_bootstrap_servers: str = "nokafka"
     event_topic: str = "noevents"

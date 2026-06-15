@@ -1,4 +1,5 @@
 from datetime import datetime
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
@@ -26,3 +27,15 @@ class Event(BaseModel):
 class APIKeyCheck(BaseModel):
     is_valid: bool # Валидность API-ключа
     project_id: str | None = None  # Идентификатор проекта
+
+
+class APIKeyCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
+class APIKeyCreated(BaseModel):
+    id: UUID
+    project_id: UUID
+    name: str
+    key_prefix: str
+    api_key: str

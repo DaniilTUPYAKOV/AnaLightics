@@ -9,7 +9,7 @@ import uuid
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from backend.model.auth import hash_api_key
+from backend.model.auth import get_api_key_prefix, hash_api_key
 from backend.model.config import Settings, get_settings
 from backend.model.schemas import Event
 
@@ -103,7 +103,7 @@ def migrate_table(client: Client, model: Type[BaseModel], table_name: str) -> No
             client.command(alter_query)
 
 
-async def init_postgres():
+async def init_postgres(settings: Settings):
     """
     Инициализирует PostgreSQL: создает таблицы и добавляет демо-проект.
     """
@@ -113,8 +113,8 @@ async def init_postgres():
         await conn.run_sync(Base.metadata.create_all)
 
     demo_project_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
-    demo_api_key = "secret-demo-key-123"
-    demo_api_key_hash = hash_api_key(demo_api_key)
+    demo_api_key = settings.api_key
+    demo_api_key_hash = hash_api_key(demo_api_key, settings.api_key_hash_secret)
 
     async with AsyncSessionLocal() as session:
         stmt = select(Project).where(Project.id == demo_project_id)
@@ -142,7 +142,7 @@ async def init_postgres():
                     project_id=demo_project.id,
                     name="Demo API key",
                     key_hash=demo_api_key_hash,
-                    key_prefix=demo_api_key[:8],
+                    key_prefix=get_api_key_prefix(demo_api_key),
                 )
             )
             print("Demo API key created in PostgreSQL.")
@@ -176,7 +176,7 @@ async def main():
     settings = get_settings()
 
     try:
-        await init_postgres()
+        await init_postgres(settings)
     except Exception as e:
         print(f"Error initializing PostgreSQL: {e}")
         raise e

@@ -50,7 +50,7 @@ class ApiKey(Base):
     project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
     name = Column(String, nullable=False)
     key_hash = Column(String, unique=True, index=True, nullable=False)
-    key_prefix = Column(String, nullable=False)
+    key_prefix = Column(String, index=True, nullable=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(
         DateTime(timezone=True),

@@ -3,6 +3,7 @@ import datetime
 import json
 import logging
 from typing import AsyncGenerator, Annotated
+from uuid import UUID
 
 from fastapi import FastAPI, Depends, Request, Security
 from fastapi.security import APIKeyHeader
@@ -31,7 +32,7 @@ from backend.model.config import (
     Settings,
     get_settings,
 )
-from backend.model.schemas import APIKeyCheck, Event
+from backend.model.schemas import APIKeyCheck, APIKeyCreate, APIKeyCreated, Event
 from backend.repositories import projects
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -107,11 +108,12 @@ async def reject_requests_during_shutdown(request: Request, call_next):
 async def get_current_project(
     api_key: Annotated[str | None, Security(api_key_header)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> ProjectContext:
     if api_key is None:
         raise UnauthorizedError("API key is required")
 
-    auth_context = await projects.get_active_project_by_api_key(db, api_key)
+    auth_context = await projects.get_active_project_by_api_key(db, api_key, settings)
 
     if auth_context is None:
         raise ForbiddenError("Invalid or inactive API key")
@@ -208,6 +210,33 @@ async def track_event(
             extra={"topic": settings.event_topic},
         )
         raise InternalKafkaError("Internal error while sending event to Kafka") from e
+
+
+@app.post("/projects/{project_id}/api-keys", response_model=APIKeyCreated)
+async def create_api_key(
+    project_id: UUID,
+    api_key_data: APIKeyCreate,
+    project_context: Annotated[ProjectContext, Depends(get_current_project)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    settings: Annotated[Settings, Depends(get_settings)],
+):
+    if project_id != project_context.project_id:
+        raise ForbiddenError("Cannot create API key for another project")
+
+    api_key, raw_api_key = await projects.create_project_api_key(
+        db,
+        project_id,
+        api_key_data.name,
+        settings,
+    )
+
+    return APIKeyCreated(
+        id=api_key.id,
+        project_id=api_key.project_id,
+        name=api_key.name,
+        key_prefix=api_key.key_prefix,
+        api_key=raw_api_key,
+    )
 
 
 @app.get("/health")
