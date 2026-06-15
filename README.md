@@ -218,6 +218,31 @@ curl http://localhost:8000/health
 
 ---
 
+### Readiness check
+
+```http
+GET /ready
+```
+
+Пример:
+
+```bash
+curl http://localhost:8000/ready
+```
+
+Успешный ответ:
+
+```json
+{
+  "status": "ready",
+  "kafka": "connected"
+}
+```
+
+Во время graceful shutdown endpoint возвращает `503 Service Unavailable`.
+
+---
+
 ### Отправка события
 
 ```http

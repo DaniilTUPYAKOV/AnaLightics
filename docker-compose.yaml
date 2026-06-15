@@ -110,6 +110,7 @@ services:
       target: api-image
     container_name: ${PROJECT_NAME}-api
     command: uvicorn backend.api.main:app --host 0.0.0.0 --port ${API_PORT} --reload
+    stop_grace_period: 30s
     ports:
       - "${API_PORT}:${API_PORT}"
     depends_on:

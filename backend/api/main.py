@@ -8,6 +8,7 @@ from fastapi import FastAPI, Depends, Request, Security
 from fastapi.security import APIKeyHeader
 from aiokafka.errors import KafkaConnectionError, KafkaTimeoutError
 from starlette.middleware.cors import CORSMiddleware
+from starlette.responses import JSONResponse
 from aiokafka import AIOKafkaProducer
 from contextlib import asynccontextmanager
 from tenacity import (
@@ -49,6 +50,7 @@ KAFKA_RETRYABLE_ERRORS = (
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     settings = get_settings()
+    app.state.is_shutting_down = False
 
     producer = AIOKafkaProducer(
         bootstrap_servers=settings.kafka_bootstrap_servers,
@@ -68,8 +70,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         yield
     finally:
+        app.state.is_shutting_down = True
+        logger.info("shutdown_started")
         await producer.stop()
         logger.info("Kafka producer stopped")
+        logger.info("shutdown_completed")
 
 
 app = FastAPI(title="Analytics API", version="0.1.0", lifespan=lifespan)
@@ -83,6 +88,20 @@ app.add_middleware(
 )
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+@app.middleware("http")
+async def reject_requests_during_shutdown(request: Request, call_next):
+    if getattr(request.app.state, "is_shutting_down", False) and request.url.path not in {
+        "/health",
+        "/ready",
+    }:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Service is shutting down"},
+        )
+
+    return await call_next(request)
 
 
 async def get_current_project(
@@ -199,3 +218,17 @@ async def health_check(request: Request):
     except AttributeError:
         pass
     return {"status": "degraded", "kafka": "disconnected"}
+
+
+@app.get("/ready")
+async def readiness_check(request: Request):
+    if getattr(request.app.state, "is_shutting_down", False):
+        raise ServiceUnavailableError("Service is shutting down")
+
+    try:
+        if request.app.state.producer:
+            return {"status": "ready", "kafka": "connected"}
+    except AttributeError:
+        pass
+
+    raise ServiceUnavailableError("Kafka producer not ready")
