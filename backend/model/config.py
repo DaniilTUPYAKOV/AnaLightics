@@ -1,38 +1,58 @@
-import os
-from dotenv import load_dotenv
+from functools import lru_cache
+from typing import Any, Literal
 
-load_dotenv()
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# PostgreSQL
-DB_URL = os.getenv("DB_URL", "nopostgresql")
 
-# Kafka
-KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "nokafka")
-EVENT_TOPIC = os.getenv("EVENT_TOPIC", "noevents")
-DLQ_TOPIC = os.getenv("DLQ_TOPIC", "noldq")
-KAFKA_PRODUCER_ACKS = int(os.getenv("KAFKA_PRODUCER_ACKS", 1))
-KAFKA_PRODUCER_REQUEST_TIMEOUT_MS = int(
-    os.getenv("KAFKA_PRODUCER_REQUEST_TIMEOUT_MS", 5000)
-)
-KAFKA_PRODUCER_SEND_TIMEOUT_SECONDS = float(
-    os.getenv("KAFKA_PRODUCER_SEND_TIMEOUT_SECONDS", 5)
-)
-KAFKA_PRODUCER_START_TIMEOUT_SECONDS = float(
-    os.getenv("KAFKA_PRODUCER_START_TIMEOUT_SECONDS", 10)
-)
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
-# ClickHouse
-CLICKHOUSE_HOST = os.getenv("CLICKHOUSE_HOST", "noclickhouse")
-CLICKHOUSE_PORT = os.getenv("CLICKHOUSE_PORT", "noclickhouseport")
-CLICKHOUSE_TABLE = os.getenv("CLICKHOUSE_TABLE", "noclickhousetable")
-CLICKHOUSE_DB = os.getenv("CLICKHOUSE_DB", "noclickhousedb")
-CLICKHOUSE_USER = os.getenv("CLICKHOUSE_USER", "noclickhouseuser")
-CLICKHOUSE_PASSWORD = os.getenv("CLICKHOUSE_PASSWORD", "noclickhousepassword")
+    # PostgreSQL
+    db_url: str = "nopostgresql"
 
-# Consumer
-CONSUMER_GROUP_ID = os.getenv("CONSUMER_GROUP_ID", "nogroup")
-CONSUMER_AUTO_OFFSET_RESET = os.getenv("CONSUMER_AUTO_OFFSET_RESET", "noconsumerautooffsetreset")
-CONSUMER_MAX_RETRIES = int(os.getenv("CONSUMER_MAX_RETRIES", 0))
-CONSUMER_RETRY_DELAY = int(os.getenv("CONSUMER_RETRY_DELAY", 0))
-CONSUMER_BATCH_SIZE = int(os.getenv("CONSUMER_BATCH_SIZE", 0))
-CONSUMER_FLUSH_INTERVAL = float(os.getenv("CONSUMER_FLUSH_INTERVAL", 0))
+    # Kafka
+    kafka_bootstrap_servers: str = "nokafka"
+    event_topic: str = "noevents"
+    dlq_topic: str = "noldq"
+    kafka_producer_acks: int | Literal["all"] = 1
+    kafka_producer_request_timeout_ms: int = 5000
+    kafka_producer_send_timeout_seconds: float = 5
+    kafka_producer_start_timeout_seconds: float = 10
+
+    # ClickHouse
+    clickhouse_host: str = "noclickhouse"
+    clickhouse_port: int = 8123
+    clickhouse_table: str = "noclickhousetable"
+    clickhouse_db: str = "noclickhousedb"
+    clickhouse_user: str = "noclickhouseuser"
+    clickhouse_password: str = "noclickhousepassword"
+
+    # Consumer
+    consumer_group_id: str = "nogroup"
+    consumer_auto_offset_reset: str = "earliest"
+    consumer_max_retries: int = 3
+    consumer_retry_delay: int = 2
+    consumer_batch_size: int = 1000
+    consumer_flush_interval: float = 5
+
+    @field_validator("kafka_producer_acks")
+    @classmethod
+    def validate_kafka_producer_acks(cls, value: Any) -> int | Literal["all"]:
+        if value in {"0", 0}:
+            return 0
+        if value in {"1", 1}:
+            return 1
+        if value == "all":
+            return "all"
+        raise ValueError("KAFKA_PRODUCER_ACKS must be 0, 1, or all")
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

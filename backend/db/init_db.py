@@ -9,15 +9,8 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from backend.model.auth import hash_api_key
+from backend.model.config import Settings, get_settings
 from backend.model.schemas import Event
-from backend.model.config import (
-    CLICKHOUSE_HOST,
-    CLICKHOUSE_PORT,
-    CLICKHOUSE_TABLE,
-    CLICKHOUSE_DB,
-    CLICKHOUSE_PASSWORD,
-    CLICKHOUSE_USER
-)
 
 from backend.db.postgres import ApiKey, AsyncSessionLocal, Base, Project, engine
 
@@ -136,19 +129,19 @@ async def init_postgres():
         await session.commit()
 
 
-def init_clickhouse():
+def init_clickhouse(settings: Settings):
     """
     Инициализирует ClickHouse: создает БД и накатывает миграции.
     """
     print("Initializing ClickHouse...")
     client = clickhouse_connect.get_client(
-        host=CLICKHOUSE_HOST,
-        port=CLICKHOUSE_PORT,
-        username=CLICKHOUSE_USER,
-        password=CLICKHOUSE_PASSWORD,
+        host=settings.clickhouse_host,
+        port=settings.clickhouse_port,
+        username=settings.clickhouse_user,
+        password=settings.clickhouse_password,
     )
-    client.command(f"CREATE DATABASE IF NOT EXISTS {CLICKHOUSE_DB}")
-    migrate_table(client, Event, CLICKHOUSE_TABLE)
+    client.command(f"CREATE DATABASE IF NOT EXISTS {settings.clickhouse_db}")
+    migrate_table(client, Event, settings.clickhouse_table)
     print("ClickHouse initialized successfully.")
 
 
@@ -157,6 +150,7 @@ async def main():
     Main entry point for the script.
     """
     print("Starting database initialization...")
+    settings = get_settings()
 
     try:
         await init_postgres()
@@ -165,7 +159,7 @@ async def main():
         raise e
 
     try:
-        init_clickhouse()
+        init_clickhouse(settings)
     except Exception as e:
         print(f"Error initializing ClickHouse: {e}")
         raise e

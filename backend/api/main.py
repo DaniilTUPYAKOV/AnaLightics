@@ -19,15 +19,11 @@ from backend.api.exceptions import (
     UnauthorizedError,
 )
 from backend.api.model import ProjectContext
-from backend.model.schemas import Event, APIKeyCheck
 from backend.model.config import (
-    EVENT_TOPIC,
-    KAFKA_BOOTSTRAP_SERVERS,
-    KAFKA_PRODUCER_ACKS,
-    KAFKA_PRODUCER_REQUEST_TIMEOUT_MS,
-    KAFKA_PRODUCER_SEND_TIMEOUT_SECONDS,
-    KAFKA_PRODUCER_START_TIMEOUT_SECONDS,
+    Settings,
+    get_settings,
 )
+from backend.model.schemas import APIKeyCheck, Event
 from backend.repositories import projects
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,19 +35,21 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    settings = get_settings()
 
     producer = AIOKafkaProducer(
-        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        bootstrap_servers=settings.kafka_bootstrap_servers,
         value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-        acks=KAFKA_PRODUCER_ACKS,
-        request_timeout_ms=KAFKA_PRODUCER_REQUEST_TIMEOUT_MS,
+        acks=settings.kafka_producer_acks,
+        request_timeout_ms=settings.kafka_producer_request_timeout_ms,
     )
     await asyncio.wait_for(
         producer.start(),
-        timeout=KAFKA_PRODUCER_START_TIMEOUT_SECONDS,
+        timeout=settings.kafka_producer_start_timeout_seconds,
     )
     logger.info("Kafka producer started")
 
+    app.state.settings = settings
     app.state.producer = producer
 
     try:
@@ -107,6 +105,7 @@ async def track_event(
     event: Event,
     project_context: Annotated[ProjectContext, Depends(get_current_project)],
     producer: Annotated[AIOKafkaProducer, Depends(get_kafka_producer)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ):
     message = {
         "event": event.model_dump(),
@@ -119,8 +118,8 @@ async def track_event(
 
     try:
         await asyncio.wait_for(
-            producer.send_and_wait(EVENT_TOPIC, message),
-            timeout=KAFKA_PRODUCER_SEND_TIMEOUT_SECONDS,
+            producer.send_and_wait(settings.event_topic, message),
+            timeout=settings.kafka_producer_send_timeout_seconds,
         )
         return {
             "is_valid": True,
@@ -128,17 +127,26 @@ async def track_event(
         }
     except KafkaConnectionError as e:
         logger.warning(
-            "Kafka connection lost: %s", e, exc_info=True, extra={"topic": EVENT_TOPIC}
+            "Kafka connection lost: %s",
+            e,
+            exc_info=True,
+            extra={"topic": settings.event_topic},
         )
         raise ServiceUnavailableError("Unable to connect to Kafka cluster") from e
     except (KafkaTimeoutError, asyncio.TimeoutError) as e:
         logger.warning(
-            "Kafka send timed out: %s", e, exc_info=True, extra={"topic": EVENT_TOPIC}
+            "Kafka send timed out: %s",
+            e,
+            exc_info=True,
+            extra={"topic": settings.event_topic},
         )
         raise GatewayTimeoutError("Request to Kafka timed out") from e
     except Exception as e:
         logger.error(
-            "Unexpected Kafka error: %s", e, exc_info=True, extra={"topic": EVENT_TOPIC}
+            "Unexpected Kafka error: %s",
+            e,
+            exc_info=True,
+            extra={"topic": settings.event_topic},
         )
         raise InternalKafkaError("Internal error while sending event to Kafka") from e
 
