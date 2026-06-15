@@ -167,7 +167,7 @@ API_PORT=8000
 API_KEY=secret-demo-key-123
 ```
 
-> При инициализации создается demo project с API key: `secret-demo-key-123`.
+> При инициализации создается demo project с project id `00000000-0000-0000-0000-000000000001` и API key: `secret-demo-key-123`.
 
 ### 3. Запустить проект
 
@@ -262,7 +262,7 @@ curl -X POST http://localhost:8000/track \
 ```json
 {
   "is_valid": true,
-  "project_id": "demo-project"
+  "project_id": "00000000-0000-0000-0000-000000000001"
 }
 ```
 

@@ -4,9 +4,11 @@ from clickhouse_connect.driver.client import Client
 from clickhouse_connect.driver.exceptions import DatabaseError
 from typing import Type, get_origin, get_args, Union
 import datetime
+import uuid
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from backend.model.auth import hash_api_key
 from backend.model.schemas import Event
 from backend.model.config import (
     CLICKHOUSE_HOST,
@@ -17,7 +19,7 @@ from backend.model.config import (
     CLICKHOUSE_USER
 )
 
-from backend.db.postgres import engine, Base, Project, AsyncSessionLocal
+from backend.db.postgres import ApiKey, AsyncSessionLocal, Base, Project, engine
 
 TYPE_MAPPING = {
     str: "String",
@@ -94,21 +96,44 @@ async def init_postgres():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+    demo_project_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
+    demo_api_key = "secret-demo-key-123"
+    demo_api_key_hash = hash_api_key(demo_api_key)
+
     async with AsyncSessionLocal() as session:
-        stmt = select(Project).where(Project.id == "demo-project")
+        stmt = select(Project).where(Project.id == demo_project_id)
         result = await session.execute(stmt)
-        
-        if not result.scalar_one_or_none():
+        demo_project = result.scalar_one_or_none()
+
+        if demo_project is None:
             demo_project = Project(
-                id="demo-project",
+                id=demo_project_id,
                 name="Demo Website",
-                api_key="secret-demo-key-123"
+                rate_limit_per_minute=1000,
             )
             session.add(demo_project)
-            await session.commit()
-            print("Demo project 'demo-project' created in PostgreSQL.")
+            await session.flush()
+            print("Demo project created in PostgreSQL.")
         else:
             print("Demo project already exists in PostgreSQL.")
+
+        stmt = select(ApiKey).where(ApiKey.key_hash == demo_api_key_hash)
+        result = await session.execute(stmt)
+
+        if result.scalar_one_or_none() is None:
+            session.add(
+                ApiKey(
+                    project_id=demo_project.id,
+                    name="Demo API key",
+                    key_hash=demo_api_key_hash,
+                    key_prefix=demo_api_key[:8],
+                )
+            )
+            print("Demo API key created in PostgreSQL.")
+        else:
+            print("Demo API key already exists in PostgreSQL.")
+
+        await session.commit()
 
 
 def init_clickhouse():
