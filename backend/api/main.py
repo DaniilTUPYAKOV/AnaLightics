@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import json
 import logging
@@ -5,7 +6,7 @@ from typing import AsyncGenerator, Annotated
 
 from fastapi import FastAPI, Depends, Request, Security
 from fastapi.security import APIKeyHeader
-from aiokafka.errors import KafkaConnectionError, TimeoutError
+from aiokafka.errors import KafkaConnectionError, TimeoutError as KafkaTimeoutError
 from starlette.middleware.cors import CORSMiddleware
 from aiokafka import AIOKafkaProducer
 from contextlib import asynccontextmanager
@@ -19,7 +20,14 @@ from backend.api.exceptions import (
 )
 from backend.api.model import ProjectContext
 from backend.model.schemas import Event, APIKeyCheck
-from backend.model.config import KAFKA_BOOTSTRAP_SERVERS, EVENT_TOPIC
+from backend.model.config import (
+    EVENT_TOPIC,
+    KAFKA_BOOTSTRAP_SERVERS,
+    KAFKA_PRODUCER_ACKS,
+    KAFKA_PRODUCER_REQUEST_TIMEOUT_MS,
+    KAFKA_PRODUCER_SEND_TIMEOUT_SECONDS,
+    KAFKA_PRODUCER_START_TIMEOUT_SECONDS,
+)
 from backend.repositories import projects
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,9 +43,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     producer = AIOKafkaProducer(
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
         value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-        acks=0,
+        acks=KAFKA_PRODUCER_ACKS,
+        request_timeout_ms=KAFKA_PRODUCER_REQUEST_TIMEOUT_MS,
     )
-    await producer.start()
+    await asyncio.wait_for(
+        producer.start(),
+        timeout=KAFKA_PRODUCER_START_TIMEOUT_SECONDS,
+    )
     logger.info("Kafka producer started")
 
     app.state.producer = producer
@@ -106,7 +118,10 @@ async def track_event(
     }
 
     try:
-        await producer.send_and_wait(EVENT_TOPIC, message, timeout_ms=5000)
+        await asyncio.wait_for(
+            producer.send_and_wait(EVENT_TOPIC, message),
+            timeout=KAFKA_PRODUCER_SEND_TIMEOUT_SECONDS,
+        )
         return {
             "is_valid": True,
             "project_id": str(project_context.project_id),
@@ -116,7 +131,7 @@ async def track_event(
             "Kafka connection lost: %s", e, exc_info=True, extra={"topic": EVENT_TOPIC}
         )
         raise ServiceUnavailableError("Unable to connect to Kafka cluster") from e
-    except TimeoutError as e:
+    except (KafkaTimeoutError, asyncio.TimeoutError) as e:
         logger.warning(
             "Kafka send timed out: %s", e, exc_info=True, extra={"topic": EVENT_TOPIC}
         )
