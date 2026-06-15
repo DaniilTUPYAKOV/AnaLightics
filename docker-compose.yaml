@@ -134,6 +134,7 @@ services:
       target: consumer-image
     container_name: ${PROJECT_NAME}-consumer
     command: python -m backend.consumer.main
+    stop_grace_period: 30s
     depends_on:
       kafka:
         condition: service_healthy

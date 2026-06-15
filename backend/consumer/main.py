@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import signal
 from datetime import datetime
 from typing import List, Dict, Any
 
@@ -27,6 +28,22 @@ CLICKHOUSE_RETRYABLE_ERRORS = (
     TimeoutError,
     ConnectionError,
 )
+
+
+def setup_shutdown_event() -> asyncio.Event:
+    shutdown_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, shutdown_event.set)
+        except (NotImplementedError, RuntimeError):
+            try:
+                signal.signal(sig, lambda *_: shutdown_event.set())
+            except ValueError:
+                logger.warning("Signal handler for %s is not available.", sig.name)
+
+    return shutdown_event
 
 
 async def store_to_dlq_batch(
@@ -157,6 +174,7 @@ class ClickHouseWriter:
 
 async def consume():
     settings = get_settings()
+    shutdown_event = setup_shutdown_event()
 
     consumer = AIOKafkaConsumer(
         settings.event_topic,
@@ -178,7 +196,7 @@ async def consume():
     logger.info("Consumer & DLQ Producer started")
 
     try:
-        while True:
+        while not shutdown_event.is_set():
             result = await consumer.getmany(
                 timeout_ms=1000,
                 max_records=settings.consumer_batch_size,
@@ -226,8 +244,7 @@ async def consume():
                 await writer.flush(dlq_producer)
                 await consumer.commit()
 
-    except KeyboardInterrupt:
-        logger.info("Stopping Consumer...")
+        logger.info("Shutdown requested. Stopping Consumer...")
     except Exception as e:
         logger.critical(f"Critical error in loop: {e}")
     finally:
