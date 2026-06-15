@@ -165,7 +165,7 @@ async def track_event(
     settings: Annotated[Settings, Depends(get_settings)],
 ):
     message = {
-        "event": event.model_dump(),
+        "event": event.model_dump(mode="json"),
         "project_id": str(project_context.project_id),
         "api_key_id": str(project_context.api_key_id)
         if project_context.api_key_id

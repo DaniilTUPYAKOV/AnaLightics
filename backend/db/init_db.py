@@ -4,6 +4,7 @@ from clickhouse_connect.driver.client import Client
 from clickhouse_connect.driver.exceptions import DatabaseError
 from typing import Type, get_origin, get_args, Union
 import datetime
+import types
 import uuid
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -23,14 +24,36 @@ TYPE_MAPPING = {
 }
 
 
+def unwrap_optional(python_type: type) -> tuple[type, bool]:
+    origin = get_origin(python_type)
+
+    if origin in {Union, types.UnionType}:
+        args = get_args(python_type)
+
+        if type(None) not in args:
+            raise ValueError(f"Unsupported union type: {python_type}")
+
+        non_none_args = [arg for arg in args if arg is not type(None)]
+
+        if len(non_none_args) != 1:
+            raise ValueError(f"Unsupported optional union type: {python_type}")
+
+        return non_none_args[0], True
+
+    return python_type, False
+
+
 def get_clickhouse_type(python_type: type) -> str:
     """
     Returns the ClickHouse type that corresponds to the given Python type.
     """
-    if get_origin(python_type) is Union and type(None) in get_args(python_type):
-        inner_type = [t for t in get_args(python_type) if t is not type(None)][0]
-        return f"Nullable({TYPE_MAPPING.get(inner_type, 'String')})"
-    return TYPE_MAPPING.get(python_type, "String")
+    inner_type, is_nullable = unwrap_optional(python_type)
+    clickhouse_type = TYPE_MAPPING.get(inner_type, "String")
+
+    if is_nullable:
+        return f"Nullable({clickhouse_type})"
+
+    return clickhouse_type
 
 
 def create_table_sql(model: Type[BaseModel], table_name: str) -> str:

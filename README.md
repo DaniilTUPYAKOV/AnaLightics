@@ -304,14 +304,14 @@ curl -X POST http://localhost:8000/track \
 
 | Поле | Тип | Описание |
 |---|---:|---|
-| `url` | `string` | URL страницы, на которой произошло событие |
-| `title` | `string` | Заголовок страницы |
-| `referrer` | `string \| null` | Источник перехода |
-| `user_agent` | `string` | Информация о браузере и устройстве |
-| `screen_width` | `integer` | Ширина экрана |
-| `screen_height` | `integer` | Высота экрана |
-| `timestamp` | `string` | Время события |
-| `event_type` | `string` | Тип события, например `page_view`, `click`, `submit` |
+| `url` | `url` | URL страницы, на которой произошло событие |
+| `title` | `string` | Заголовок страницы, 1-300 символов |
+| `referrer` | `url \| null` | Источник перехода |
+| `user_agent` | `string` | Информация о браузере и устройстве, 1-1000 символов |
+| `screen_width` | `integer` | Ширина экрана, 1-16384 |
+| `screen_height` | `integer` | Высота экрана, 1-16384 |
+| `timestamp` | `datetime` | Время события в ISO-формате |
+| `event_type` | `string` | Тип события, например `page_view`, `click`, `submit`; формат `^[a-z][a-z0-9_]*$`, до 64 символов |
 
 ---
 

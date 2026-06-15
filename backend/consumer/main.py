@@ -30,6 +30,13 @@ CLICKHOUSE_RETRYABLE_ERRORS = (
 )
 
 
+def parse_iso_datetime(value: str) -> datetime:
+    if value.endswith("Z"):
+        value = f"{value[:-1]}+00:00"
+
+    return datetime.fromisoformat(value)
+
+
 def setup_shutdown_event() -> asyncio.Event:
     shutdown_event = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -220,7 +227,8 @@ async def consume():
 
                             event = raw_data['event']
                             event['project_id'] = raw_data.get('project_id')
-                            event['received_at'] = datetime.fromisoformat(
+                            event['timestamp'] = parse_iso_datetime(event['timestamp'])
+                            event['received_at'] = parse_iso_datetime(
                                 raw_data.get('received_at'))
                             writer.add_to_buffer(event)
                         except Exception as parse_error:
