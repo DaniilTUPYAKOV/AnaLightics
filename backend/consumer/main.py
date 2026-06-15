@@ -6,12 +6,27 @@ from typing import List, Dict, Any
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 import clickhouse_connect
+from clickhouse_connect.driver.exceptions import InternalError, OperationalError
+from tenacity import (
+    AsyncRetrying,
+    before_sleep_log,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from backend.model.config import Settings, get_settings
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+CLICKHOUSE_RETRYABLE_ERRORS = (
+    OperationalError,
+    InternalError,
+    TimeoutError,
+    ConnectionError,
+)
 
 
 async def store_to_dlq_batch(
@@ -81,6 +96,24 @@ class ClickHouseWriter:
     def add_to_buffer(self, event: Dict):
         self.buffer.append(event)
 
+    async def insert_batch(self, data: List[List[Any]], columns: List[str]) -> None:
+        retrying = AsyncRetrying(
+            stop=stop_after_attempt(self.settings.consumer_max_retries),
+            wait=wait_exponential(multiplier=self.settings.consumer_retry_delay),
+            retry=retry_if_exception_type(CLICKHOUSE_RETRYABLE_ERRORS),
+            before_sleep=before_sleep_log(logger, logging.WARNING),
+            reraise=True,
+        )
+
+        async for attempt in retrying:
+            with attempt:
+                await asyncio.to_thread(
+                    self.client.insert,
+                    self.settings.clickhouse_table,
+                    data,
+                    column_names=columns,
+                )
+
     async def flush(self, dlq_producer: AIOKafkaProducer):
         """
         Async flush with retry and DLQ logic.
@@ -88,35 +121,21 @@ class ClickHouseWriter:
         if not self.buffer:
             return
 
-        for attempt in range(1, self.settings.consumer_max_retries + 1):
-            try:
-                first_event = self.buffer[0]
-                columns = list(first_event.keys())
-                data = [[item.get(col) for col in columns]
-                        for item in self.buffer]
+        first_event = self.buffer[0]
+        columns = list(first_event.keys())
+        data = [[item.get(col) for col in columns] for item in self.buffer]
 
-                await asyncio.to_thread(
-                    self.client.insert,
-                    self.settings.clickhouse_table,
-                    data,
-                    column_names=columns
-                )
-
-                logger.info(
-                    f"Written {len(self.buffer)} events to ClickHouse.")
-                self.buffer = []
-                self.last_flush_time = datetime.now()
-                return
-
-            except Exception as e:
-                logger.warning(
-                    f"Attempt {attempt}/{self.settings.consumer_max_retries} failed: {e}")
-                if attempt < self.settings.consumer_max_retries:
-                    sleep_time = self.settings.consumer_retry_delay * (2 ** (attempt - 1))
-                    await asyncio.sleep(sleep_time)
-                else:
-                    logger.error(
-                        "All attempts to write to ClickHouse have been exhausted.")
+        try:
+            await self.insert_batch(data, columns)
+            logger.info(f"Written {len(self.buffer)} events to ClickHouse.")
+            self.buffer = []
+            self.last_flush_time = datetime.now()
+            return
+        except Exception as insert_error:
+            logger.error(
+                "All attempts to write to ClickHouse have been exhausted: %s",
+                insert_error,
+            )
 
         try:
             await store_to_dlq_batch(

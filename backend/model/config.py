@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     kafka_producer_request_timeout_ms: int = 5000
     kafka_producer_send_timeout_seconds: float = 5
     kafka_producer_start_timeout_seconds: float = 10
+    kafka_producer_max_retries: int = 3
+    kafka_producer_retry_delay_seconds: float = 0.1
+    kafka_producer_retry_max_delay_seconds: float = 1
 
     # ClickHouse
     clickhouse_host: str = "noclickhouse"

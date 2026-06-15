@@ -6,10 +6,17 @@ from typing import AsyncGenerator, Annotated
 
 from fastapi import FastAPI, Depends, Request, Security
 from fastapi.security import APIKeyHeader
-from aiokafka.errors import KafkaConnectionError, TimeoutError as KafkaTimeoutError
+from aiokafka.errors import KafkaConnectionError, KafkaTimeoutError
 from starlette.middleware.cors import CORSMiddleware
 from aiokafka import AIOKafkaProducer
 from contextlib import asynccontextmanager
+from tenacity import (
+    AsyncRetrying,
+    before_sleep_log,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from backend.api.exceptions import (
     ForbiddenError,
@@ -31,6 +38,12 @@ from backend.db.postgres import get_db
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+KAFKA_RETRYABLE_ERRORS = (
+    KafkaConnectionError,
+    KafkaTimeoutError,
+    asyncio.TimeoutError,
+)
 
 
 @asynccontextmanager
@@ -100,6 +113,31 @@ async def get_kafka_producer(request: Request) -> AIOKafkaProducer:
     return producer
 
 
+async def send_event_to_kafka(
+    producer: AIOKafkaProducer,
+    topic: str,
+    message: dict,
+    settings: Settings,
+) -> None:
+    retrying = AsyncRetrying(
+        stop=stop_after_attempt(settings.kafka_producer_max_retries),
+        wait=wait_exponential(
+            multiplier=settings.kafka_producer_retry_delay_seconds,
+            max=settings.kafka_producer_retry_max_delay_seconds,
+        ),
+        retry=retry_if_exception_type(KAFKA_RETRYABLE_ERRORS),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True,
+    )
+
+    async for attempt in retrying:
+        with attempt:
+            await asyncio.wait_for(
+                producer.send_and_wait(topic, message),
+                timeout=settings.kafka_producer_send_timeout_seconds,
+            )
+
+
 @app.post("/track", response_model=APIKeyCheck)
 async def track_event(
     event: Event,
@@ -117,9 +155,11 @@ async def track_event(
     }
 
     try:
-        await asyncio.wait_for(
-            producer.send_and_wait(settings.event_topic, message),
-            timeout=settings.kafka_producer_send_timeout_seconds,
+        await send_event_to_kafka(
+            producer,
+            settings.event_topic,
+            message,
+            settings,
         )
         return {
             "is_valid": True,
