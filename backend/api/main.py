@@ -24,6 +24,7 @@ from backend.api.exceptions import (
     ForbiddenError,
     GatewayTimeoutError,
     InternalKafkaError,
+    NotFoundError,
     ServiceUnavailableError,
     UnauthorizedError,
 )
@@ -32,7 +33,14 @@ from backend.model.config import (
     Settings,
     get_settings,
 )
-from backend.model.schemas import APIKeyCheck, APIKeyCreate, APIKeyCreated, Event
+from backend.model.schemas import (
+    APIKeyCheck,
+    APIKeyCreate,
+    APIKeyCreated,
+    APIKeyRevoked,
+    APIKeyRotate,
+    Event,
+)
 from backend.repositories import projects
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -236,6 +244,69 @@ async def create_api_key(
         name=api_key.name,
         key_prefix=api_key.key_prefix,
         api_key=raw_api_key,
+    )
+
+
+@app.post(
+    "/projects/{project_id}/api-keys/{api_key_id}/rotate",
+    response_model=APIKeyCreated,
+)
+async def rotate_api_key(
+    project_id: UUID,
+    api_key_id: UUID,
+    api_key_data: APIKeyRotate,
+    project_context: Annotated[ProjectContext, Depends(get_current_project)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    settings: Annotated[Settings, Depends(get_settings)],
+):
+    if project_id != project_context.project_id:
+        raise ForbiddenError("Cannot rotate API key for another project")
+
+    rotated_api_key = await projects.rotate_project_api_key(
+        db,
+        project_id,
+        api_key_id,
+        api_key_data.name,
+        settings,
+    )
+
+    if rotated_api_key is None:
+        raise NotFoundError("Active API key not found")
+
+    api_key, raw_api_key = rotated_api_key
+
+    return APIKeyCreated(
+        id=api_key.id,
+        project_id=api_key.project_id,
+        name=api_key.name,
+        key_prefix=api_key.key_prefix,
+        api_key=raw_api_key,
+    )
+
+
+@app.post(
+    "/projects/{project_id}/api-keys/{api_key_id}/revoke",
+    response_model=APIKeyRevoked,
+)
+async def revoke_api_key(
+    project_id: UUID,
+    api_key_id: UUID,
+    project_context: Annotated[ProjectContext, Depends(get_current_project)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    if project_id != project_context.project_id:
+        raise ForbiddenError("Cannot revoke API key for another project")
+
+    api_key = await projects.revoke_project_api_key(db, project_id, api_key_id)
+
+    if api_key is None:
+        raise NotFoundError("Active API key not found")
+
+    return APIKeyRevoked(
+        id=api_key.id,
+        project_id=api_key.project_id,
+        name=api_key.name,
+        revoked_at=api_key.revoked_at,
     )
 
 

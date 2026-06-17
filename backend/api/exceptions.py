@@ -12,6 +12,11 @@ class ForbiddenError(HTTPException):
         super().__init__(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
 
 
+class NotFoundError(HTTPException):
+    def __init__(self, detail: str = "Not found"):
+        super().__init__(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+
+
 class ServiceUnavailableError(HTTPException):
     def __init__(self, detail: str = "Service unavailable"):
         super().__init__(

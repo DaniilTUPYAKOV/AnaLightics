@@ -33,9 +33,20 @@ class APIKeyCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
 
 
+class APIKeyRotate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+
+
 class APIKeyCreated(BaseModel):
     id: UUID
     project_id: UUID
     name: str
     key_prefix: str
     api_key: str
+
+
+class APIKeyRevoked(BaseModel):
+    id: UUID
+    project_id: UUID
+    name: str
+    revoked_at: datetime
