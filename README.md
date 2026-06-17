@@ -213,7 +213,8 @@ curl http://localhost:8000/health
 ```json
 {
   "status": "healthy",
-  "kafka": "connected"
+  "kafka": "connected",
+  "redis": "connected"
 }
 ```
 
@@ -236,11 +237,13 @@ curl http://localhost:8000/ready
 ```json
 {
   "status": "ready",
-  "kafka": "connected"
+  "kafka": "connected",
+  "redis": "connected"
 }
 ```
 
 Во время graceful shutdown endpoint возвращает `503 Service Unavailable`.
+Если Kafka producer или Redis rate limiter недоступны, endpoint также возвращает `503 Service Unavailable`.
 
 ---
 
@@ -249,6 +252,10 @@ curl http://localhost:8000/ready
 ```http
 POST /track
 ```
+
+Endpoint uses project-level fixed-window rate limiting in Redis.
+If the project exceeds `rate_limit_per_minute`, API returns `429 Too Many Requests`.
+If Redis is unavailable, API fails closed and returns `503 Service Unavailable`.
 
 Headers:
 

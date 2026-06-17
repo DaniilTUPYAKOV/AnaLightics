@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     api_key: str = "secret-demo-key-123"
     api_key_hash_secret: str = "dev-api-key-hash-secret"
 
+    # Redis
+    redis_host: str = "noredis"
+    redis_port: int = 6379
+    redis_db: int = 0
+    redis_socket_timeout_seconds: float = 1
+
     # Kafka
     kafka_bootstrap_servers: str = "nokafka"
     event_topic: str = "noevents"

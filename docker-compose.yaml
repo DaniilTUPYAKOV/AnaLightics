@@ -76,6 +76,19 @@ services:
       timeout: 10s
       retries: 10
       start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    container_name: ${PROJECT_NAME}-redis
+    ports:
+      - "${REDIS_PORT}:6379"
+    networks:
+      - analightics-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
       
   init_db:
     build:
@@ -118,11 +131,17 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - analightics-network
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:${KAFKA_PORT_INTERNAL}
       EVENT_TOPIC: ${EVENT_TOPIC}
+      REDIS_HOST: redis
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_DB: ${REDIS_DB}
+      REDIS_SOCKET_TIMEOUT_SECONDS: ${REDIS_SOCKET_TIMEOUT_SECONDS}
       API_KEY: ${API_KEY}
       API_KEY_HASH_SECRET: ${API_KEY_HASH_SECRET}
       POSTGRES_USER: ${POSTGRES_USER}

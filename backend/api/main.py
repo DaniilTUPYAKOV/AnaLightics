@@ -8,6 +8,8 @@ from uuid import UUID
 from fastapi import FastAPI, Depends, Request, Security
 from fastapi.security import APIKeyHeader
 from aiokafka.errors import KafkaConnectionError, KafkaTimeoutError
+from redis.asyncio import Redis
+from redis.exceptions import RedisError
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from aiokafka import AIOKafkaProducer
@@ -29,6 +31,7 @@ from backend.api.exceptions import (
     UnauthorizedError,
 )
 from backend.api.model import ProjectContext
+from backend.api.rate_limit import enforce_fixed_window_rate_limit
 from backend.model.config import (
     Settings,
     get_settings,
@@ -60,29 +63,47 @@ KAFKA_RETRYABLE_ERRORS = (
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     settings = get_settings()
     app.state.is_shutting_down = False
-
-    producer = AIOKafkaProducer(
-        bootstrap_servers=settings.kafka_bootstrap_servers,
-        value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-        acks=settings.kafka_producer_acks,
-        request_timeout_ms=settings.kafka_producer_request_timeout_ms,
-    )
-    await asyncio.wait_for(
-        producer.start(),
-        timeout=settings.kafka_producer_start_timeout_seconds,
-    )
-    logger.info("Kafka producer started")
-
-    app.state.settings = settings
-    app.state.producer = producer
+    producer = None
+    redis = None
 
     try:
+        producer = AIOKafkaProducer(
+            bootstrap_servers=settings.kafka_bootstrap_servers,
+            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+            acks=settings.kafka_producer_acks,
+            request_timeout_ms=settings.kafka_producer_request_timeout_ms,
+        )
+        await asyncio.wait_for(
+            producer.start(),
+            timeout=settings.kafka_producer_start_timeout_seconds,
+        )
+        logger.info("Kafka producer started")
+
+        redis = Redis(
+            host=settings.redis_host,
+            port=settings.redis_port,
+            db=settings.redis_db,
+            socket_timeout=settings.redis_socket_timeout_seconds,
+            socket_connect_timeout=settings.redis_socket_timeout_seconds,
+            decode_responses=True,
+        )
+        await redis.ping()
+        logger.info("Redis client started")
+
+        app.state.settings = settings
+        app.state.producer = producer
+        app.state.redis = redis
+
         yield
     finally:
         app.state.is_shutting_down = True
         logger.info("shutdown_started")
-        await producer.stop()
-        logger.info("Kafka producer stopped")
+        if redis is not None:
+            await redis.aclose()
+            logger.info("Redis client stopped")
+        if producer is not None:
+            await producer.stop()
+            logger.info("Kafka producer stopped")
         logger.info("shutdown_completed")
 
 
@@ -142,6 +163,24 @@ async def get_kafka_producer(request: Request) -> AIOKafkaProducer:
     return producer
 
 
+async def get_redis(request: Request) -> Redis:
+    redis = request.app.state.redis
+    if not redis:
+        raise ServiceUnavailableError("Redis not ready")
+    return redis
+
+
+async def enforce_project_rate_limit(
+    project_context: Annotated[ProjectContext, Depends(get_current_project)],
+    redis: Annotated[Redis, Depends(get_redis)],
+) -> None:
+    await enforce_fixed_window_rate_limit(
+        redis,
+        project_context.project_id,
+        project_context.rate_limit_per_minute,
+    )
+
+
 async def send_event_to_kafka(
     producer: AIOKafkaProducer,
     topic: str,
@@ -171,6 +210,7 @@ async def send_event_to_kafka(
 async def track_event(
     event: Event,
     project_context: Annotated[ProjectContext, Depends(get_current_project)],
+    _: Annotated[None, Depends(enforce_project_rate_limit)],
     producer: Annotated[AIOKafkaProducer, Depends(get_kafka_producer)],
     settings: Annotated[Settings, Depends(get_settings)],
 ):
@@ -312,12 +352,26 @@ async def revoke_api_key(
 
 @app.get("/health")
 async def health_check(request: Request):
+    status = {"status": "healthy", "kafka": "connected", "redis": "connected"}
+
     try:
-        if request.app.state.producer:
-            return {"status": "healthy", "kafka": "connected"}
+        if not request.app.state.producer:
+            status["status"] = "degraded"
+            status["kafka"] = "disconnected"
     except AttributeError:
-        pass
-    return {"status": "degraded", "kafka": "disconnected"}
+        status["status"] = "degraded"
+        status["kafka"] = "disconnected"
+
+    try:
+        redis = request.app.state.redis
+        if not redis:
+            status["status"] = "degraded"
+            status["redis"] = "disconnected"
+    except AttributeError:
+        status["status"] = "degraded"
+        status["redis"] = "disconnected"
+
+    return status
 
 
 @app.get("/ready")
@@ -326,9 +380,15 @@ async def readiness_check(request: Request):
         raise ServiceUnavailableError("Service is shutting down")
 
     try:
-        if request.app.state.producer:
-            return {"status": "ready", "kafka": "connected"}
+        if not request.app.state.producer:
+            raise ServiceUnavailableError("Kafka producer not ready")
     except AttributeError:
-        pass
+        raise ServiceUnavailableError("Kafka producer not ready") from None
 
-    raise ServiceUnavailableError("Kafka producer not ready")
+    try:
+        redis = request.app.state.redis
+        await redis.ping()
+    except (AttributeError, RedisError) as e:
+        raise ServiceUnavailableError("Redis not ready") from e
+
+    return {"status": "ready", "kafka": "connected", "redis": "connected"}

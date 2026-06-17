@@ -17,6 +17,14 @@ class NotFoundError(HTTPException):
         super().__init__(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
 
+class TooManyRequestsError(HTTPException):
+    def __init__(self, detail: str = "Too many requests"):
+        super().__init__(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=detail,
+        )
+
+
 class ServiceUnavailableError(HTTPException):
     def __init__(self, detail: str = "Service unavailable"):
         super().__init__(
