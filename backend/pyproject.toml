@@ -43,3 +43,8 @@ init_db = [
 
 [tool.poetry]
 package-mode = false
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: tests that require external services",
+]

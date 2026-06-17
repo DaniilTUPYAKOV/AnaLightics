@@ -1,31 +1,41 @@
 import datetime
-import os
 import uuid
 
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import declarative_base, relationship
 
-PG_USER = os.getenv("POSTGRES_USER")
-PG_PASS = os.getenv("POSTGRES_PASSWORD")
-PG_DB = os.getenv("POSTGRES_DB")
-PG_HOST = os.getenv("POSTGRES_HOST")
-PG_PORT = os.getenv("POSTGRES_PORT_EXTERNAL")
-
-DATABASE_URL = f"postgresql+asyncpg://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/{PG_DB}"
-
-engine = create_async_engine(
-    DATABASE_URL,
-    echo=False,
-    pool_size=10,
-    max_overflow=20,
-    pool_timeout=5,
-    pool_pre_ping=True,
-)
-AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
-
 Base = declarative_base()
+
+
+def build_database_url(
+    user: str | None,
+    password: str | None,
+    host: str | None,
+    port: str | int | None,
+    database: str | None,
+) -> str:
+    return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{database}"
+
+
+def create_postgres_engine(database_url: str) -> AsyncEngine:
+    return create_async_engine(
+        database_url,
+        echo=False,
+        pool_size=10,
+        max_overflow=20,
+        pool_timeout=5,
+        pool_pre_ping=True,
+    )
+
+
+def create_sessionmaker(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
+    return async_sessionmaker(
+        engine,
+        expire_on_commit=False,
+        class_=AsyncSession,
+    )
 
 
 class Project(Base):
@@ -61,6 +71,6 @@ class ApiKey(Base):
     project = relationship("Project", back_populates="api_keys")
 
 
-async def get_db():
-    async with AsyncSessionLocal() as session:
+async def get_db(sessionmaker: async_sessionmaker[AsyncSession]):
+    async with sessionmaker() as session:
         yield session

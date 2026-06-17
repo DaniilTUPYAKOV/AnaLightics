@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Any, Literal
 
-from pydantic import field_validator
+from pydantic import computed_field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,6 +15,11 @@ class Settings(BaseSettings):
 
     # PostgreSQL
     db_url: str = "nopostgresql"
+    postgres_user: str = "test"
+    postgres_password: str = "test"
+    postgres_db: str = "test"
+    postgres_host: str = "localhost"
+    postgres_port_external: int = 5432
 
     # API
     api_key: str = "secret-demo-key-123"
@@ -53,6 +58,19 @@ class Settings(BaseSettings):
     consumer_retry_delay: int = 2
     consumer_batch_size: int = 1000
     consumer_flush_interval: float = 5
+
+    @computed_field
+    @property
+    def database_url(self) -> str:
+        if self.db_url != "nopostgresql":
+            return self.db_url
+
+        return (
+            "postgresql+asyncpg://"
+            f"{self.postgres_user}:{self.postgres_password}"
+            f"@{self.postgres_host}:{self.postgres_port_external}"
+            f"/{self.postgres_db}"
+        )
 
     @field_validator("kafka_producer_acks")
     @classmethod

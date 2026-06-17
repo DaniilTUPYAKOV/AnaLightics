@@ -47,7 +47,7 @@ from backend.model.schemas import (
 from backend.repositories import projects
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from backend.db.postgres import get_db
+from backend.db.postgres import create_postgres_engine, create_sessionmaker
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -65,8 +65,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.is_shutting_down = False
     producer = None
     redis = None
+    postgres_engine = None
 
     try:
+        postgres_engine = create_postgres_engine(settings.database_url)
+        app.state.db_sessionmaker = create_sessionmaker(postgres_engine)
+        logger.info("PostgreSQL sessionmaker started")
+
         producer = AIOKafkaProducer(
             bootstrap_servers=settings.kafka_bootstrap_servers,
             value_serializer=lambda v: json.dumps(v).encode("utf-8"),
@@ -104,6 +109,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         if producer is not None:
             await producer.stop()
             logger.info("Kafka producer stopped")
+        if postgres_engine is not None:
+            await postgres_engine.dispose()
+            logger.info("PostgreSQL engine disposed")
         logger.info("shutdown_completed")
 
 
@@ -118,6 +126,12 @@ app.add_middleware(
 )
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+async def get_db(request: Request):
+    sessionmaker = request.app.state.db_sessionmaker
+    async with sessionmaker() as session:
+        yield session
 
 
 @app.middleware("http")

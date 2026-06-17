@@ -13,7 +13,13 @@ from backend.model.auth import get_api_key_prefix, hash_api_key
 from backend.model.config import Settings, get_settings
 from backend.model.schemas import Event
 
-from backend.db.postgres import ApiKey, AsyncSessionLocal, Base, Project, engine
+from backend.db.postgres import (
+    ApiKey,
+    Base,
+    Project,
+    create_postgres_engine,
+    create_sessionmaker,
+)
 
 TYPE_MAPPING = {
     str: "String",
@@ -109,47 +115,53 @@ async def init_postgres(settings: Settings):
     """
     print("Initializing PostgreSQL...")
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    postgres_engine = create_postgres_engine(settings.database_url)
+    sessionmaker = create_sessionmaker(postgres_engine)
 
-    demo_project_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
-    demo_api_key = settings.api_key
-    demo_api_key_hash = hash_api_key(demo_api_key, settings.api_key_hash_secret)
+    try:
+        async with postgres_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
 
-    async with AsyncSessionLocal() as session:
-        stmt = select(Project).where(Project.id == demo_project_id)
-        result = await session.execute(stmt)
-        demo_project = result.scalar_one_or_none()
+        demo_project_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
+        demo_api_key = settings.api_key
+        demo_api_key_hash = hash_api_key(demo_api_key, settings.api_key_hash_secret)
 
-        if demo_project is None:
-            demo_project = Project(
-                id=demo_project_id,
-                name="Demo Website",
-                rate_limit_per_minute=1000,
-            )
-            session.add(demo_project)
-            await session.flush()
-            print("Demo project created in PostgreSQL.")
-        else:
-            print("Demo project already exists in PostgreSQL.")
+        async with sessionmaker() as session:
+            stmt = select(Project).where(Project.id == demo_project_id)
+            result = await session.execute(stmt)
+            demo_project = result.scalar_one_or_none()
 
-        stmt = select(ApiKey).where(ApiKey.key_hash == demo_api_key_hash)
-        result = await session.execute(stmt)
-
-        if result.scalar_one_or_none() is None:
-            session.add(
-                ApiKey(
-                    project_id=demo_project.id,
-                    name="Demo API key",
-                    key_hash=demo_api_key_hash,
-                    key_prefix=get_api_key_prefix(demo_api_key),
+            if demo_project is None:
+                demo_project = Project(
+                    id=demo_project_id,
+                    name="Demo Website",
+                    rate_limit_per_minute=1000,
                 )
-            )
-            print("Demo API key created in PostgreSQL.")
-        else:
-            print("Demo API key already exists in PostgreSQL.")
+                session.add(demo_project)
+                await session.flush()
+                print("Demo project created in PostgreSQL.")
+            else:
+                print("Demo project already exists in PostgreSQL.")
 
-        await session.commit()
+            stmt = select(ApiKey).where(ApiKey.key_hash == demo_api_key_hash)
+            result = await session.execute(stmt)
+
+            if result.scalar_one_or_none() is None:
+                session.add(
+                    ApiKey(
+                        project_id=demo_project.id,
+                        name="Demo API key",
+                        key_hash=demo_api_key_hash,
+                        key_prefix=get_api_key_prefix(demo_api_key),
+                    )
+                )
+                print("Demo API key created in PostgreSQL.")
+            else:
+                print("Demo API key already exists in PostgreSQL.")
+
+            await session.commit()
+    finally:
+        await postgres_engine.dispose()
 
 
 def init_clickhouse(settings: Settings):

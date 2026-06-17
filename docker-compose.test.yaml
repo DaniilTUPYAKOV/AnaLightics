@@ -1,0 +1,26 @@
+networks:
+  analightics-test-network:
+    driver: bridge
+
+services:
+  postgres-test:
+    image: postgres:15
+    container_name: analightics-postgres-test
+    ports:
+      - "${POSTGRES_TEST_PORT_EXTERNAL}:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_TEST_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_TEST_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_TEST_DB}
+    volumes:
+      - postgres_test_data:/var/lib/postgresql/data
+    networks:
+      - analightics-test-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_TEST_USER} -d ${POSTGRES_TEST_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_test_data:

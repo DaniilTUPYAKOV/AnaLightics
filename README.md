@@ -392,6 +392,81 @@ events_dlq
 
 ---
 
+## Тестирование
+
+Тесты разделены по уровням:
+
+```text
+backend/tests/unit
+backend/tests/integration
+```
+
+`unit` - быстрые тесты без внешних сервисов. Они проверяют чистую логику: API key helpers, Pydantic-схемы, построение rate limit ключей, consumer/init_db helper-функции.
+
+`integration` - тесты, которым нужна внешняя инфраструктура. Сейчас это repository tests для PostgreSQL: создание, поиск, ротация и отзыв API-ключей.
+
+### Unit tests
+
+```bash
+cd backend
+python -m pytest tests/unit
+```
+
+### Integration tests
+
+Integration tests используют отдельный тестовый Postgres из `docker-compose.test.yaml`.
+
+Создать локальный env-файл для тестового контура:
+
+```bash
+cp .env.test.example .env.test
+```
+
+Поднять тестовый Postgres:
+
+```bash
+docker compose --env-file .env.test -f docker-compose.test.yaml up -d postgres-test
+```
+
+Запустить integration tests:
+
+```bash
+cd backend
+python -m pytest tests/integration
+```
+
+Остановить тестовый Postgres:
+
+```bash
+docker compose --env-file .env.test -f docker-compose.test.yaml down
+```
+
+Удалить тестовый volume и начать с чистого состояния:
+
+```bash
+docker compose --env-file .env.test -f docker-compose.test.yaml down -v
+```
+
+### Запуск по marker
+
+Repository tests помечены marker'ом `integration`, поэтому можно запускать тесты так:
+
+```bash
+python -m pytest -m "not integration"
+python -m pytest -m integration
+```
+
+### Все тесты
+
+```bash
+cd backend
+python -m pytest tests
+```
+
+Важно: integration fixtures содержат safety guard и откажутся пересоздавать таблицы, если имя тестовой БД не заканчивается на `_test`.
+
+---
+
 ## Roadmap
 
 - [ ] Добавить dashboard для просмотра метрик
