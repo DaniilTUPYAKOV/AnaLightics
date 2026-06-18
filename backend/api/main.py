@@ -1,11 +1,13 @@
 import asyncio
 import datetime
 import json
-import logging
+import time
 from typing import AsyncGenerator, Annotated
 from uuid import UUID, uuid4
 
+import structlog
 from fastapi import FastAPI, Depends, HTTPException, Request, Security
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.security import APIKeyHeader
 from aiokafka.errors import KafkaConnectionError, KafkaTimeoutError as AioKafkaTimeoutError
@@ -18,7 +20,6 @@ from aiokafka import AIOKafkaProducer
 from contextlib import asynccontextmanager
 from tenacity import (
     AsyncRetrying,
-    before_sleep_log,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
@@ -36,6 +37,7 @@ from backend.api.exceptions import (
     build_error_response,
 )
 from backend.api.model import ProjectContext
+from backend.api.logging_config import configure_structured_logging
 from backend.api.rate_limit import enforce_fixed_window_rate_limit
 from backend.model.config import (
     Settings,
@@ -54,14 +56,23 @@ from backend.repositories import projects
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.db.postgres import create_postgres_engine, create_sessionmaker
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+configure_structured_logging()
+logger = structlog.get_logger(__name__)
 
 KAFKA_RETRYABLE_ERRORS = (
     KafkaConnectionError,
     AioKafkaTimeoutError,
     asyncio.TimeoutError,
 )
+
+
+def log_kafka_retry(retry_state) -> None:
+    exception = retry_state.outcome.exception() if retry_state.outcome else None
+    logger.warning(
+        "kafka_send_retrying",
+        attempt_number=retry_state.attempt_number,
+        error_type=type(exception).__name__ if exception else None,
+    )
 
 
 @asynccontextmanager
@@ -75,7 +86,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         postgres_engine = create_postgres_engine(settings.database_url)
         app.state.db_sessionmaker = create_sessionmaker(postgres_engine)
-        logger.info("PostgreSQL sessionmaker started")
+        logger.info("postgres_sessionmaker_started")
 
         producer = AIOKafkaProducer(
             bootstrap_servers=settings.kafka_bootstrap_servers,
@@ -87,7 +98,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             producer.start(),
             timeout=settings.kafka_producer_start_timeout_seconds,
         )
-        logger.info("Kafka producer started")
+        logger.info("kafka_producer_started")
 
         redis = Redis(
             host=settings.redis_host,
@@ -98,7 +109,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             decode_responses=True,
         )
         await redis.ping()
-        logger.info("Redis client started")
+        logger.info("redis_client_started")
 
         app.state.settings = settings
         app.state.producer = producer
@@ -110,13 +121,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info("shutdown_started")
         if redis is not None:
             await redis.aclose()
-            logger.info("Redis client stopped")
+            logger.info("redis_client_stopped")
         if producer is not None:
             await producer.stop()
-            logger.info("Kafka producer stopped")
+            logger.info("kafka_producer_stopped")
         if postgres_engine is not None:
             await postgres_engine.dispose()
-            logger.info("PostgreSQL engine disposed")
+            logger.info("postgres_engine_disposed")
         logger.info("shutdown_completed")
 
 
@@ -141,23 +152,40 @@ def get_request_id(request: Request) -> str | None:
 async def attach_request_id(request: Request, call_next):
     request_id = str(uuid4())
     request.state.request_id = request_id
+    structlog.contextvars.clear_contextvars()
+    structlog.contextvars.bind_contextvars(request_id=request_id)
 
-    response = await call_next(request)
-    response.headers["X-Request-ID"] = request_id
-    return response
+    try:
+        if getattr(request.app.state, "is_shutting_down", False) and request.url.path not in {
+            "/health",
+            "/ready",
+        }:
+            error = ServiceUnavailableError("Service is shutting down")
+            return JSONResponse(
+                status_code=error.status_code,
+                content=jsonable_encoder(build_error_response(error, request_id)),
+                headers={"X-Request-ID": request_id},
+            )
+
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+    finally:
+        structlog.contextvars.clear_contextvars()
 
 
 @app.exception_handler(ApiError)
 async def api_error_handler(request: Request, exc: ApiError):
     request_id = get_request_id(request)
     logger.warning(
-        "API error: %s",
-        exc.code,
-        extra={"request_id": request_id, "details": exc.details},
+        "api_error",
+        error_code=exc.code,
+        status_code=exc.status_code,
+        details=exc.details,
     )
     return JSONResponse(
         status_code=exc.status_code,
-        content=build_error_response(exc, request_id),
+        content=jsonable_encoder(build_error_response(exc, request_id)),
     )
 
 
@@ -172,7 +200,7 @@ async def request_validation_error_handler(request: Request, exc: RequestValidat
     )
     return JSONResponse(
         status_code=error.status_code,
-        content=build_error_response(error, request_id),
+        content=jsonable_encoder(build_error_response(error, request_id)),
     )
 
 
@@ -186,7 +214,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     )
     return JSONResponse(
         status_code=error.status_code,
-        content=build_error_response(error, request_id),
+        content=jsonable_encoder(build_error_response(error, request_id)),
     )
 
 
@@ -194,15 +222,13 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 async def unhandled_exception_handler(request: Request, exc: Exception):
     request_id = get_request_id(request)
     logger.error(
-        "Unhandled API error: %s",
-        exc,
+        "unhandled_api_error",
         exc_info=True,
-        extra={"request_id": request_id},
     )
     error = ApiError()
     return JSONResponse(
         status_code=error.status_code,
-        content=build_error_response(error, request_id),
+        content=jsonable_encoder(build_error_response(error, request_id)),
     )
 
 
@@ -210,20 +236,6 @@ async def get_db(request: Request):
     sessionmaker = request.app.state.db_sessionmaker
     async with sessionmaker() as session:
         yield session
-
-
-@app.middleware("http")
-async def reject_requests_during_shutdown(request: Request, call_next):
-    if getattr(request.app.state, "is_shutting_down", False) and request.url.path not in {
-        "/health",
-        "/ready",
-    }:
-        return JSONResponse(
-            status_code=503,
-            content={"detail": "Service is shutting down"},
-        )
-
-    return await call_next(request)
 
 
 async def get_current_project(
@@ -286,7 +298,7 @@ async def send_event_to_kafka(
             max=settings.kafka_producer_retry_max_delay_seconds,
         ),
         retry=retry_if_exception_type(KAFKA_RETRYABLE_ERRORS),
-        before_sleep=before_sleep_log(logger, logging.WARNING),
+        before_sleep=log_kafka_retry,
         reraise=True,
     )
 
@@ -300,12 +312,14 @@ async def send_event_to_kafka(
 
 @app.post("/track", response_model=APIKeyCheck)
 async def track_event(
+    request: Request,
     event: Event,
     project_context: Annotated[ProjectContext, Depends(get_current_project)],
     _: Annotated[None, Depends(enforce_project_rate_limit)],
     producer: Annotated[AIOKafkaProducer, Depends(get_kafka_producer)],
     settings: Annotated[Settings, Depends(get_settings)],
 ):
+    request_started_at = time.perf_counter()
     message = {
         "event": event.model_dump(mode="json"),
         "project_id": str(project_context.project_id),
@@ -314,13 +328,30 @@ async def track_event(
         else None,
         "received_at": datetime.datetime.now().isoformat(),
     }
+    log_context = {
+        "project_id": str(project_context.project_id),
+        "api_key_id": str(project_context.api_key_id)
+        if project_context.api_key_id
+        else None,
+        "topic": settings.event_topic,
+        "event_type": event.event_type,
+    }
 
     try:
+        kafka_send_started_at = time.perf_counter()
         await send_event_to_kafka(
             producer,
             settings.event_topic,
             message,
             settings,
+        )
+        kafka_duration_ms = (time.perf_counter() - kafka_send_started_at) * 1000
+        request_duration_ms = (time.perf_counter() - request_started_at) * 1000
+        logger.info(
+            "track_request_completed",
+            **log_context,
+            duration_ms=round(request_duration_ms, 2),
+            kafka_duration_ms=round(kafka_duration_ms, 2),
         )
         return {
             "is_valid": True,
@@ -328,26 +359,26 @@ async def track_event(
         }
     except KafkaConnectionError as e:
         logger.warning(
-            "Kafka connection lost: %s",
-            e,
+            "kafka_send_failed",
             exc_info=True,
-            extra={"topic": settings.event_topic},
+            **log_context,
+            error_type=type(e).__name__,
         )
         raise KafkaUnavailableError() from e
     except (AioKafkaTimeoutError, asyncio.TimeoutError) as e:
         logger.warning(
-            "Kafka send timed out: %s",
-            e,
+            "kafka_send_failed",
             exc_info=True,
-            extra={"topic": settings.event_topic},
+            **log_context,
+            error_type=type(e).__name__,
         )
         raise KafkaTimeoutError() from e
     except Exception as e:
         logger.error(
-            "Unexpected Kafka error: %s",
-            e,
+            "kafka_send_failed",
             exc_info=True,
-            extra={"topic": settings.event_topic},
+            **log_context,
+            error_type=type(e).__name__,
         )
         raise InternalKafkaError("Internal error while sending event to Kafka") from e
 

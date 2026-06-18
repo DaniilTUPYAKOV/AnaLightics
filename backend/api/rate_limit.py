@@ -1,13 +1,13 @@
 import datetime
-import logging
 from uuid import UUID
 
+import structlog
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
 from backend.api.exceptions import ServiceUnavailableError, TooManyRequestsError
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 RATE_LIMIT_WINDOW_TTL_SECONDS = 70
 
@@ -33,7 +33,12 @@ async def enforce_fixed_window_rate_limit(
         if request_count == 1:
             await redis.expire(key, RATE_LIMIT_WINDOW_TTL_SECONDS)
     except RedisError as e:
-        logger.error("Redis rate limit check failed: %s", e, exc_info=True)
+        logger.error(
+            "rate_limit_check_failed",
+            exc_info=True,
+            project_id=str(project_id),
+            error_type=type(e).__name__,
+        )
         raise ServiceUnavailableError("Rate limiter unavailable") from e
 
     if request_count > limit_per_minute:

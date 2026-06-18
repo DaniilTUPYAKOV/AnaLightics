@@ -376,6 +376,43 @@ API возвращает ошибки в едином формате:
 
 ---
 
+### Structured logging
+
+API logs are emitted as JSON objects via `structlog`. The `event` field is a stable event name, and operational context is written as top-level keys. Request-scoped fields such as `request_id` are bound through context variables.
+
+Example:
+
+```json
+{
+  "timestamp": "2026-06-18T10:30:00.000000+00:00",
+  "level": "info",
+  "logger": "backend.api.main",
+  "event": "track_request_completed",
+  "request_id": "7cc3e0e1-0000-4000-9000-000000000000",
+  "project_id": "00000000-0000-0000-0000-000000000001",
+  "api_key_id": "8e558dd8-2fd7-4db4-b9b8-8628517da5de",
+  "topic": "raw_events",
+  "event_type": "page_view",
+  "duration_ms": 18.4,
+  "kafka_duration_ms": 12.5
+}
+```
+
+Main API events:
+
+| Event | Meaning |
+|---|---|
+| `track_request_completed` | `/track` request completed successfully |
+| `kafka_send_failed` | Sending to Kafka failed |
+| `kafka_send_retrying` | Kafka send is being retried after a transient error |
+| `rate_limit_check_failed` | Redis rate limit check failed |
+| `api_error` | Expected API error was rendered |
+| `unhandled_api_error` | Unexpected exception was caught by the fallback handler |
+
+These fields are intended for filtering in log backends such as Loki, ELK, or Grafana.
+
+---
+
 ## Модель события
 
 | Поле | Тип | Описание |
