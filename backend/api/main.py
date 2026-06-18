@@ -3,13 +3,15 @@ import datetime
 import json
 import logging
 from typing import AsyncGenerator, Annotated
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from fastapi import FastAPI, Depends, Request, Security
+from fastapi import FastAPI, Depends, HTTPException, Request, Security
+from fastapi.exceptions import RequestValidationError
 from fastapi.security import APIKeyHeader
-from aiokafka.errors import KafkaConnectionError, KafkaTimeoutError
+from aiokafka.errors import KafkaConnectionError, KafkaTimeoutError as AioKafkaTimeoutError
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
+from starlette import status
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from aiokafka import AIOKafkaProducer
@@ -23,12 +25,15 @@ from tenacity import (
 )
 
 from backend.api.exceptions import (
+    ApiError,
     ForbiddenError,
-    GatewayTimeoutError,
     InternalKafkaError,
+    KafkaTimeoutError,
+    KafkaUnavailableError,
     NotFoundError,
     ServiceUnavailableError,
     UnauthorizedError,
+    build_error_response,
 )
 from backend.api.model import ProjectContext
 from backend.api.rate_limit import enforce_fixed_window_rate_limit
@@ -54,7 +59,7 @@ logger = logging.getLogger(__name__)
 
 KAFKA_RETRYABLE_ERRORS = (
     KafkaConnectionError,
-    KafkaTimeoutError,
+    AioKafkaTimeoutError,
     asyncio.TimeoutError,
 )
 
@@ -126,6 +131,79 @@ app.add_middleware(
 )
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def get_request_id(request: Request) -> str | None:
+    return getattr(request.state, "request_id", None)
+
+
+@app.middleware("http")
+async def attach_request_id(request: Request, call_next):
+    request_id = str(uuid4())
+    request.state.request_id = request_id
+
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
+@app.exception_handler(ApiError)
+async def api_error_handler(request: Request, exc: ApiError):
+    request_id = get_request_id(request)
+    logger.warning(
+        "API error: %s",
+        exc.code,
+        extra={"request_id": request_id, "details": exc.details},
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=build_error_response(exc, request_id),
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_error_handler(request: Request, exc: RequestValidationError):
+    request_id = get_request_id(request)
+    error = ApiError(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        code="VALIDATION_ERROR",
+        message="Request validation failed",
+        details={"errors": exc.errors()},
+    )
+    return JSONResponse(
+        status_code=error.status_code,
+        content=build_error_response(error, request_id),
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    request_id = get_request_id(request)
+    error = ApiError(
+        status_code=exc.status_code,
+        code="HTTP_ERROR",
+        message=str(exc.detail),
+    )
+    return JSONResponse(
+        status_code=error.status_code,
+        content=build_error_response(error, request_id),
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    request_id = get_request_id(request)
+    logger.error(
+        "Unhandled API error: %s",
+        exc,
+        exc_info=True,
+        extra={"request_id": request_id},
+    )
+    error = ApiError()
+    return JSONResponse(
+        status_code=error.status_code,
+        content=build_error_response(error, request_id),
+    )
 
 
 async def get_db(request: Request):
@@ -255,15 +333,15 @@ async def track_event(
             exc_info=True,
             extra={"topic": settings.event_topic},
         )
-        raise ServiceUnavailableError("Unable to connect to Kafka cluster") from e
-    except (KafkaTimeoutError, asyncio.TimeoutError) as e:
+        raise KafkaUnavailableError() from e
+    except (AioKafkaTimeoutError, asyncio.TimeoutError) as e:
         logger.warning(
             "Kafka send timed out: %s",
             e,
             exc_info=True,
             extra={"topic": settings.event_topic},
         )
-        raise GatewayTimeoutError("Request to Kafka timed out") from e
+        raise KafkaTimeoutError() from e
     except Exception as e:
         logger.error(
             "Unexpected Kafka error: %s",

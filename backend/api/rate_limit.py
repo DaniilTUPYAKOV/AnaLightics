@@ -37,4 +37,4 @@ async def enforce_fixed_window_rate_limit(
         raise ServiceUnavailableError("Rate limiter unavailable") from e
 
     if request_count > limit_per_minute:
-        raise TooManyRequestsError("Rate limit exceeded")
+        raise TooManyRequestsError()

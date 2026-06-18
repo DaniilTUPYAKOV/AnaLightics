@@ -345,6 +345,37 @@ Body:
 
 ---
 
+### Формат ошибок API
+
+API возвращает ошибки в едином формате:
+
+```json
+{
+  "error": {
+    "code": "RATE_LIMIT_EXCEEDED",
+    "message": "Too many events",
+    "request_id": "7cc3e0e1-0000-4000-9000-000000000000",
+    "details": {}
+  }
+}
+```
+
+`request_id` также возвращается в header `X-Request-ID`. API генерирует новый UUID для каждого запроса.
+
+Примеры кодов:
+
+| Code | HTTP | Meaning |
+|---|---:|---|
+| `AUTH_REQUIRED` | 401 | API key is missing |
+| `API_KEY_INVALID` | 403 | API key is invalid or inactive |
+| `VALIDATION_ERROR` | 422 | Request body/query/path validation failed |
+| `RATE_LIMIT_EXCEEDED` | 429 | Project exceeded event rate limit |
+| `KAFKA_UNAVAILABLE` | 503 | Event ingestion is temporarily unavailable |
+| `KAFKA_TIMEOUT` | 504 | Event ingestion timed out |
+| `INTERNAL_ERROR` | 500 | Unexpected server error |
+
+---
+
 ## Модель события
 
 | Поле | Тип | Описание |
