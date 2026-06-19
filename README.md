@@ -6,23 +6,28 @@
 ![ClickHouse](https://img.shields.io/badge/ClickHouse-23.10-FFCC01?style=for-the-badge&logo=clickhouse)
 ![Docker](https://img.shields.io/badge/Docker_Compose-ready-2496ED?style=for-the-badge&logo=docker)
 
-**AnaLightics** — это lightweight high-load система для сбора и обработки web analytics / clickstream событий.
+**AnaLightics** — легковесная высоконагруженная система для сбора и обработки событий веб-аналитики и clickstream-данных.
 
-Проект демонстрирует, как построить отказоустойчивый event pipeline, который принимает события через API, буферизует их в Kafka, обрабатывает батчами и сохраняет в ClickHouse для дальнейшей аналитики.
+Проект показывает, как построить отказоустойчивый событийный конвейер: API принимает события, Kafka буферизует поток, consumer обрабатывает события пачками, а ClickHouse хранит данные для дальнейшей аналитики.
 
 ---
 
 ## Зачем этот проект
 
-AnaLightics создан как pet project для практики backend/high-load архитектуры:
+AnaLightics создан как OpenSource система веб аналитики, котора подходит как для локального использвания так и для более крупных проектов. Высокая надежность и скорость системы обусловлена highload вдохновленной архитектурой включающей в себя:
 
 - асинхронный API для приема событий;
 - буферизация нагрузки через Kafka;
-- batch insert в ClickHouse;
+- пакетная запись в ClickHouse;
 - хранение проектов и API-ключей в PostgreSQL;
-- retry-механизм при ошибках записи;
+- безопасное хранение API-ключей через hash и prefix lookup;
+- ограничение частоты запросов через Redis;
+- retry-механизмы для временных ошибок;
 - Dead Letter Queue для событий, которые не удалось обработать;
-- запуск всей инфраструктуры через Docker Compose.
+- единый формат API-ошибок;
+- структурированные логи через `structlog`;
+- запуск всей инфраструктуры через Docker Compose;
+- unit, API и интеграционные тесты.
 
 ---
 
@@ -30,23 +35,25 @@ AnaLightics создан как pet project для практики backend/high
 
 ```mermaid
 flowchart LR
-    Client[Client / Website] -->|POST /track| API[FastAPI API]
-    API -->|validate API key| PG[(PostgreSQL)]
-    API -->|produce event| Kafka[(Kafka topic: raw_events)]
-    Kafka --> Consumer[Async Consumer]
+    Client[Клиент / сайт] -->|POST /track| API[FastAPI API]
+    API -->|проверка API-ключа| PG[(PostgreSQL)]
+    API -->|rate limit| Redis[(Redis)]
+    API -->|отправка события| Kafka[(Kafka topic: raw_events)]
+    Kafka --> Consumer[Async consumer]
     Consumer -->|batch insert| CH[(ClickHouse)]
-    Consumer -->|failed events| DLQ[(Kafka topic: events_dlq)]
+    Consumer -->|ошибочные события| DLQ[(Kafka topic: events_dlq)]
 ```
 
 ### Поток обработки
 
 1. Клиент отправляет событие на `POST /track`.
 2. API проверяет `x-api-key` в PostgreSQL.
-3. Валидное событие отправляется в Kafka topic `raw_events`.
-4. Consumer читает события из Kafka.
-5. События накапливаются в буфер.
-6. При достижении batch size или flush interval данные записываются в ClickHouse.
-7. Если запись не удалась после retry-попыток, события отправляются в DLQ.
+3. API проверяет project-level RPM limit через Redis.
+4. Валидное событие отправляется в Kafka topic `raw_events`.
+5. Consumer читает события из Kafka.
+6. Consumer нормализует событие и накапливает batch.
+7. При достижении `CONSUMER_BATCH_SIZE` или `CONSUMER_FLUSH_INTERVAL` batch записывается в ClickHouse.
+8. Если сообщение нельзя разобрать или записать после retry-попыток, оно отправляется в DLQ.
 
 ---
 
@@ -58,35 +65,44 @@ flowchart LR
 | **Kafka** | Буферизация и доставка событий |
 | **ClickHouse** | Быстрое аналитическое хранилище |
 | **PostgreSQL** | Хранение проектов и API-ключей |
+| **Redis** | Rate limiting и быстрые runtime-проверки |
 | **SQLAlchemy Async** | Асинхронная работа с PostgreSQL |
-| **Pydantic** | Валидация входящих событий |
-| **Docker Compose** | Локальный запуск всей инфраструктуры |
+| **Pydantic** | Валидация входящих событий и конфигурации |
+| **Tenacity** | Retry-механизмы |
+| **structlog** | Структурированные JSON-логи |
+| **Docker Compose** | Локальный запуск инфраструктуры |
 | **Poetry** | Управление зависимостями backend-приложения |
 
 ---
 
 ## Возможности
 
-- **Event tracking API**  
-  Прием пользовательских событий через HTTP endpoint.
+- **Tracking API**  
+  Прием пользовательских событий через HTTP endpoint `/track`.
 
-- **API key validation**  
-  Каждый запрос проверяется по API-ключу проекта.
+- **API key authentication**  
+  Каждый запрос проверяется по API-ключу проекта. Полный ключ не хранится в базе: сохраняются только HMAC-SHA256 hash и безопасный prefix.
 
 - **Kafka buffering**  
-  API не пишет напрямую в ClickHouse, а отправляет события в Kafka, чтобы выдерживать пики нагрузки.
+  API не пишет напрямую в ClickHouse, а быстро отправляет события в Kafka. Это помогает выдерживать пики нагрузки и переживать временную недоступность ClickHouse.
 
 - **Batch processing**  
   Consumer пишет события пачками, что эффективнее для аналитического хранилища.
 
-- **Retry logic**  
-  При временной ошибке записи consumer повторяет попытку.
+- **Retries**  
+  Временные ошибки Kafka и ClickHouse обрабатываются retry-механизмами.
 
 - **Dead Letter Queue**  
-  Если событие не удалось обработать, оно не теряется, а отправляется в отдельный Kafka topic.
+  Некорректные или не обработанные события не теряются, а отправляются в отдельный Kafka topic.
 
-- **Auto schema initialization**  
-  Таблица ClickHouse создается на основе Pydantic-модели события.
+- **Rate limiting**  
+  Для проекта используется fixed-window RPM limit на Redis.
+
+- **Структурированные логи**  
+  API пишет JSON-логи с `request_id`, `project_id`, `event`, `duration_ms` и другими полями.
+
+- **Idempotency-ready events**  
+  Клиент обязан передавать `event_id`. Повторная отправка того же события должна использовать тот же `event_id`.
 
 ---
 
@@ -96,20 +112,32 @@ flowchart LR
 AnaLightics/
 ├── backend/
 │   ├── api/
-│   │   └── main.py          # FastAPI приложение и endpoint /track
+│   │   ├── exceptions.py       # Единый формат API-ошибок
+│   │   ├── logging_config.py   # Настройка structlog
+│   │   ├── main.py             # FastAPI приложение и endpoints
+│   │   └── rate_limit.py       # Fixed-window rate limiter
 │   ├── consumer/
-│   │   └── main.py          # Kafka consumer, batch processing, DLQ
+│   │   └── main.py             # Kafka consumer, batch processing, DLQ
 │   ├── db/
-│   │   ├── init_db.py       # Инициализация PostgreSQL и ClickHouse
-│   │   └── postgres.py      # SQLAlchemy модели и подключение к PostgreSQL
+│   │   ├── init_db.py          # Инициализация PostgreSQL и ClickHouse
+│   │   └── postgres.py         # SQLAlchemy модели и фабрики подключения
 │   ├── model/
-│   │   ├── config.py        # Конфигурация из env-переменных
-│   │   └── schemas.py       # Pydantic-схемы событий
+│   │   ├── auth.py             # Генерация и проверка API-ключей
+│   │   ├── config.py           # Settings из env-переменных
+│   │   └── schemas.py          # Pydantic-схемы
+│   ├── repositories/
+│   │   └── projects.py         # Работа с проектами и API-ключами
+│   ├── tests/
+│   │   ├── api/
+│   │   ├── integration/
+│   │   └── unit/
 │   ├── Dockerfile
 │   ├── pyproject.toml
 │   └── poetry.lock
 ├── .env.example
+├── .env.test.example
 ├── docker-compose.yaml
+├── docker-compose.test.yaml
 └── README.md
 ```
 
@@ -130,7 +158,7 @@ cd AnaLightics
 cp .env.example .env
 ```
 
-Открой `.env` и укажи значения для PostgreSQL, ClickHouse, Kafka и API.
+Открой `.env` и укажи значения для PostgreSQL, Redis, Kafka, ClickHouse и API.
 
 Пример минимальной локальной конфигурации:
 
@@ -143,8 +171,14 @@ POSTGRES_DB=analightics
 POSTGRES_PORT_EXTERNAL=5432
 POSTGRES_HOST=postgres
 
+REDIS_HOST=redis
+REDIS_PORT=6379
+REDIS_DB=0
+REDIS_SOCKET_TIMEOUT_SECONDS=1
+
 KAFKA_PORT_EXTERNAL=9092
 KAFKA_PORT_INTERNAL=29092
+KAFKA_BOOTSTRAP_SERVERS=kafka:29092
 EVENT_TOPIC=raw_events
 DLQ_TOPIC=events_dlq
 KAFKA_PRODUCER_ACKS=1
@@ -158,7 +192,7 @@ KAFKA_PRODUCER_RETRY_MAX_DELAY_SECONDS=1
 CLICKHOUSE_PORT=8123
 CLICKHOUSE_PORT_EXTERNAL=8123
 CLICKHOUSE_NATIVE_PORT=9000
-CLICKHOUSE_TABLE=analightics.events
+CLICKHOUSE_TABLE=events
 CLICKHOUSE_USER=analightics
 CLICKHOUSE_PASSWORD=analightics_password
 CLICKHOUSE_DB=analightics
@@ -175,7 +209,7 @@ API_KEY=secret-demo-key-123
 API_KEY_HASH_SECRET=replace_with_a_long_random_secret
 ```
 
-> При инициализации создается demo project с project id `00000000-0000-0000-0000-000000000001` и API key из `API_KEY`. В PostgreSQL хранится не ключ, а HMAC-SHA256 hash с секретом `API_KEY_HASH_SECRET`.
+При инициализации создается demo project с id `00000000-0000-0000-0000-000000000001` и API key из `API_KEY`.
 
 ### 3. Запустить проект
 
@@ -186,6 +220,7 @@ docker compose up --build
 После запуска будут подняты:
 
 - PostgreSQL;
+- Redis;
 - ClickHouse;
 - Kafka;
 - init_db контейнер для инициализации БД;
@@ -196,7 +231,7 @@ docker compose up --build
 
 ## API
 
-### Health check
+### Проверка состояния
 
 ```http
 GET /health
@@ -218,9 +253,7 @@ curl http://localhost:8000/health
 }
 ```
 
----
-
-### Readiness check
+### Проверка готовности
 
 ```http
 GET /ready
@@ -242,10 +275,7 @@ curl http://localhost:8000/ready
 }
 ```
 
-Во время graceful shutdown endpoint возвращает `503 Service Unavailable`.
-Если Kafka producer или Redis rate limiter недоступны, endpoint также возвращает `503 Service Unavailable`.
-
----
+Во время graceful shutdown endpoint возвращает `503 Service Unavailable`. Если Kafka producer или Redis недоступны, endpoint тоже возвращает `503 Service Unavailable`.
 
 ### Отправка события
 
@@ -253,18 +283,16 @@ curl http://localhost:8000/ready
 POST /track
 ```
 
-Endpoint uses project-level fixed-window rate limiting in Redis.
-If the project exceeds `rate_limit_per_minute`, API returns `429 Too Many Requests`.
-If Redis is unavailable, API fails closed and returns `503 Service Unavailable`.
+Эндпоинт использует ограничение частоты запросов на уровне проекта: fixed-window rate limiting в Redis. Если проект превышает `rate_limit_per_minute`, API возвращает `429 Too Many Requests`. Если Redis недоступен, API закрывает прием событий и возвращает `503 Service Unavailable`.
 
-Headers:
+Заголовки:
 
 ```http
 Content-Type: application/json
 x-api-key: secret-demo-key-123
 ```
 
-Body:
+Тело запроса:
 
 ```json
 {
@@ -280,9 +308,9 @@ Body:
 }
 ```
 
-`event_id` is required and must be generated by the client. Reuse the same `event_id` when retrying the same event.
+`event_id` обязателен и должен генерироваться клиентом. При повторной отправке того же события нужно использовать тот же `event_id`.
 
-Curl пример:
+Curl-пример:
 
 ```bash
 curl -X POST http://localhost:8000/track \
@@ -310,22 +338,20 @@ curl -X POST http://localhost:8000/track \
 }
 ```
 
----
-
 ### Создание API-ключа
 
 ```http
 POST /projects/{project_id}/api-keys
 ```
 
-Headers:
+Заголовки:
 
 ```http
 Content-Type: application/json
 x-api-key: secret-demo-key-123
 ```
 
-Body:
+Тело запроса:
 
 ```json
 {
@@ -345,11 +371,27 @@ Body:
 }
 ```
 
-Полный `api_key` возвращается только один раз при создании. В PostgreSQL хранится HMAC-SHA256 hash и безопасный `key_prefix`; авторизация сначала ищет кандидатов по префиксу, а затем проверяет полный ключ по hash.
+Полный `api_key` возвращается только один раз при создании. В PostgreSQL хранится HMAC-SHA256 hash и безопасный `key_prefix`; авторизация сначала ищет кандидатов по prefix, а затем проверяет полный ключ по hash.
+
+### Ротация API-ключа
+
+```http
+POST /projects/{project_id}/api-keys/{api_key_id}/rotate
+```
+
+Эндпоинт отзывает старый активный ключ и создает новый ключ для того же проекта.
+
+### Отзыв API-ключа
+
+```http
+POST /projects/{project_id}/api-keys/{api_key_id}/revoke
+```
+
+Эндпоинт деактивирует активный ключ проекта.
 
 ---
 
-### Формат ошибок API
+## Формат ошибок API
 
 API возвращает ошибки в едином формате:
 
@@ -368,23 +410,23 @@ API возвращает ошибки в едином формате:
 
 Примеры кодов:
 
-| Code | HTTP | Meaning |
+| Code | HTTP | Значение |
 |---|---:|---|
-| `AUTH_REQUIRED` | 401 | API key is missing |
-| `API_KEY_INVALID` | 403 | API key is invalid or inactive |
-| `VALIDATION_ERROR` | 422 | Request body/query/path validation failed |
-| `RATE_LIMIT_EXCEEDED` | 429 | Project exceeded event rate limit |
-| `KAFKA_UNAVAILABLE` | 503 | Event ingestion is temporarily unavailable |
-| `KAFKA_TIMEOUT` | 504 | Event ingestion timed out |
-| `INTERNAL_ERROR` | 500 | Unexpected server error |
+| `AUTH_REQUIRED` | 401 | API-ключ не передан |
+| `API_KEY_INVALID` | 403 | API-ключ невалиден, неактивен или не имеет доступа |
+| `VALIDATION_ERROR` | 422 | Ошибка валидации body/query/path |
+| `RATE_LIMIT_EXCEEDED` | 429 | Проект превысил лимит событий |
+| `KAFKA_UNAVAILABLE` | 503 | Прием событий временно недоступен |
+| `KAFKA_TIMEOUT` | 504 | Отправка события в Kafka превысила timeout |
+| `INTERNAL_ERROR` | 500 | Непредвиденная ошибка сервера |
 
 ---
 
-### Structured logging
+## Структурированные логи
 
-API logs are emitted as JSON objects via `structlog`. The `event` field is a stable event name, and operational context is written as top-level keys. Request-scoped fields such as `request_id` are bound through context variables.
+API пишет JSON-логи через `structlog`. Поле `event` — стабильное имя события, а контекст (`request_id`, `project_id`, `topic`, `duration_ms`) записывается отдельными top-level полями.
 
-Example:
+Пример:
 
 ```json
 {
@@ -402,18 +444,18 @@ Example:
 }
 ```
 
-Main API events:
+Основные события API:
 
-| Event | Meaning |
+| Event | Значение |
 |---|---|
-| `track_request_completed` | `/track` request completed successfully |
-| `kafka_send_failed` | Sending to Kafka failed |
-| `kafka_send_retrying` | Kafka send is being retried after a transient error |
-| `rate_limit_check_failed` | Redis rate limit check failed |
-| `api_error` | Expected API error was rendered |
-| `unhandled_api_error` | Unexpected exception was caught by the fallback handler |
+| `track_request_completed` | `/track` успешно обработан |
+| `kafka_send_failed` | Ошибка отправки в Kafka |
+| `kafka_send_retrying` | Повторная попытка отправки в Kafka |
+| `rate_limit_check_failed` | Ошибка проверки rate limit в Redis |
+| `api_error` | Ожидаемая API-ошибка отрендерена в едином формате |
+| `unhandled_api_error` | Непредвиденная ошибка обработана fallback handler-ом |
 
-These fields are intended for filtering in log backends such as Loki, ELK, or Grafana.
+Эти поля удобно фильтровать в Loki, ELK, Grafana и других системах наблюдаемости.
 
 ---
 
@@ -421,6 +463,7 @@ These fields are intended for filtering in log backends such as Loki, ELK, or Gr
 
 | Поле | Тип | Описание |
 |---|---:|---|
+| `event_id` | `uuid` | Уникальный id события, сгенерированный клиентом |
 | `url` | `url` | URL страницы, на которой произошло событие |
 | `title` | `string` | Заголовок страницы, 1-300 символов |
 | `referrer` | `url \| null` | Источник перехода |
@@ -429,6 +472,21 @@ These fields are intended for filtering in log backends such as Loki, ELK, or Gr
 | `screen_height` | `integer` | Высота экрана, 1-16384 |
 | `timestamp` | `datetime` | Время события в ISO-формате |
 | `event_type` | `string` | Тип события, например `page_view`, `click`, `submit`; формат `^[a-z][a-z0-9_]*$`, до 64 символов |
+
+---
+
+## Идемпотентность и дубли
+
+`POST /track` принимает `event_id`, сгенерированный клиентом. Повторная отправка того же события должна использовать тот же `event_id`.
+
+В ClickHouse таблица создается с:
+
+```sql
+ENGINE = ReplacingMergeTree()
+ORDER BY (project_id, event_id)
+```
+
+Это делает систему готовой к дедупликации по `(project_id, event_id)`. Важно: `ReplacingMergeTree` схлопывает дубли асинхронно во время background merge. До merge обычный `SELECT` может временно видеть дубли; для строгого чтения нужен `FINAL`, materialized view или отдельный query/read layer.
 
 ---
 
@@ -457,6 +515,7 @@ events_dlq
 В DLQ попадают:
 
 - события с некорректной структурой;
+- события без обязательного `event_id`;
 - события, которые не удалось распарсить;
 - batch событий, который не удалось записать в ClickHouse после всех retry-попыток.
 
@@ -470,23 +529,33 @@ events_dlq
 
 ```text
 backend/tests/unit
+backend/tests/api
 backend/tests/integration
 ```
 
-`unit` - быстрые тесты без внешних сервисов. Они проверяют чистую логику: API key helpers, Pydantic-схемы, построение rate limit ключей, consumer/init_db helper-функции.
+`unit` — быстрые тесты без внешних сервисов. Они проверяют чистую логику: API key helpers, Pydantic-схемы, rate limit helpers, consumer/init_db helper-функции.
 
-`integration` - тесты, которым нужна внешняя инфраструктура. Сейчас это repository tests для PostgreSQL: создание, поиск, ротация и отзыв API-ключей.
+`api` — тесты FastAPI-контракта через ASGI-клиент. Они отправляют HTTP-запросы в приложение, но подменяют внешние сервисы тестовыми объектами.
 
-### Unit tests
+`integration` — тесты, которым нужна внешняя инфраструктура. Сейчас это repository tests для PostgreSQL: создание, поиск, ротация и отзыв API-ключей.
+
+### Unit-тесты
 
 ```bash
 cd backend
 python -m pytest tests/unit
 ```
 
-### Integration tests
+### API tests
 
-Integration tests используют отдельный тестовый Postgres из `docker-compose.test.yaml`.
+```bash
+cd backend
+python -m pytest tests/api
+```
+
+### Интеграционные тесты
+
+Интеграционные тесты используют отдельный тестовый Postgres из `docker-compose.test.yaml`.
 
 Создать локальный env-файл для тестового контура:
 
@@ -521,7 +590,7 @@ docker compose --env-file .env.test -f docker-compose.test.yaml down -v
 
 ### Запуск по marker
 
-Repository tests помечены marker'ом `integration`, поэтому можно запускать тесты так:
+Repository tests помечены marker-ом `integration`, поэтому можно запускать тесты так:
 
 ```bash
 python -m pytest -m "not integration"
@@ -536,19 +605,6 @@ python -m pytest tests
 ```
 
 Важно: integration fixtures содержат safety guard и откажутся пересоздавать таблицы, если имя тестовой БД не заканчивается на `_test`.
-
----
-
-## Roadmap
-
-- [ ] Добавить dashboard для просмотра метрик
-- [ ] Добавить frontend tracking script
-- [ ] Добавить endpoint для создания проектов и API-ключей
-- [ ] Добавить Prometheus/Grafana мониторинг
-- [ ] Добавить интеграционные тесты
-- [ ] Добавить CI pipeline
-- [ ] Добавить нагрузочное тестирование
-- [ ] Добавить replay событий из DLQ
 
 ---
 
@@ -586,6 +642,20 @@ poetry run pytest
 
 ---
 
+## Планы
+
+- [ ] Добавить dashboard для просмотра метрик
+- [ ] Добавить frontend tracking script
+- [ ] Добавить endpoint для создания проектов
+- [ ] Добавить Prometheus/Grafana мониторинг
+- [ ] Добавить end-to-end тесты полного пути API -> Kafka -> consumer -> ClickHouse
+- [ ] Добавить CI pipeline
+- [ ] Добавить нагрузочное тестирование
+- [ ] Добавить replay событий из DLQ
+- [ ] Добавить read model для дедуплицированных аналитических запросов
+
+---
+
 ## Автор
 
 **Daniil Tupyakov**
@@ -594,7 +664,6 @@ GitHub: [@DaniilTUPYAKOV](https://github.com/DaniilTUPYAKOV)
 
 ---
 
-## License
+## Лицензия
 
-Нет. Пользуйтесь на здоровье
-
+Лицензия не указана.
