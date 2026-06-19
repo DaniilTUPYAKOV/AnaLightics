@@ -49,6 +49,7 @@ def anyio_backend() -> str:
 def valid_track_payload() -> dict:
     """Return a valid track request body accepted by the Event schema."""
     return {
+        "event_id": "00000000-0000-0000-0000-000000000003",
         "url": "https://example.com/catalog",
         "title": "Catalog",
         "referrer": None,
@@ -140,6 +141,7 @@ async def test_track_accepts_valid_event_and_sends_message_to_kafka(
     assert topic == "events"
     assert message["project_id"] == str(PROJECT_ID)
     assert message["api_key_id"] == str(API_KEY_ID)
+    assert message["event"]["event_id"] == "00000000-0000-0000-0000-000000000003"
     assert message["event"]["event_type"] == "page_view"
     assert message["event"]["url"] == "https://example.com/catalog"
     assert message["received_at"]
@@ -166,6 +168,28 @@ async def test_track_returns_validation_error_contract_for_invalid_event(
     assert body["error"]["message"] == "Request validation failed"
     assert body["error"]["request_id"]
     assert body["error"]["details"]["errors"]
+    assert producer.messages == []
+
+
+@pytest.mark.anyio
+async def test_track_requires_client_generated_event_id(
+    track_api_client: tuple[AsyncClient, FakeKafkaProducer],
+) -> None:
+    """Track requests without event_id should be rejected as non-idempotent."""
+    client, producer = track_api_client
+    payload = valid_track_payload()
+    del payload["event_id"]
+
+    response = await client.post(
+        "/track",
+        json=payload,
+        headers={"X-API-Key": "ak_live_test"},
+    )
+
+    body = response.json()
+    assert response.status_code == 422
+    assert body["error"]["code"] == "VALIDATION_ERROR"
+    assert body["error"]["request_id"]
     assert producer.messages == []
 
 

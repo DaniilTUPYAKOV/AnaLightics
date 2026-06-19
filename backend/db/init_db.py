@@ -26,6 +26,7 @@ TYPE_MAPPING = {
     int: "Int32",
     float: "Float64",
     bool: "UInt8",
+    uuid.UUID: "UUID",
     datetime.datetime: "DateTime",
 }
 
@@ -83,9 +84,9 @@ def create_table_sql(model: Type[BaseModel], table_name: str) -> str:
     sql = f"""
     CREATE TABLE IF NOT EXISTS {table_name} (
     {columns_sql}
-    ) ENGINE = MergeTree()
+    ) ENGINE = ReplacingMergeTree()
     PARTITION BY toYYYYMM(received_at)
-    ORDER BY (event_type, timestamp)
+    ORDER BY (project_id, event_id)
     """
     return sql
 

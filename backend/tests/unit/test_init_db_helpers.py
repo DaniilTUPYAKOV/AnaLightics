@@ -1,9 +1,11 @@
 import datetime
+import uuid
 from typing import Union
 
 import pytest
 
-from backend.db.init_db import get_clickhouse_type, unwrap_optional
+from backend.db.init_db import create_table_sql, get_clickhouse_type, unwrap_optional
+from backend.model.schemas import Event
 
 
 def test_unwrap_optional_returns_inner_type_and_nullable_flag():
@@ -42,9 +44,25 @@ def test_unwrap_optional_rejects_multi_type_optional_union():
         (float, "Float64"),
         (bool, "UInt8"),
         (datetime.datetime, "DateTime"),
+        (uuid.UUID, "UUID"),
         (str | None, "Nullable(String)"),
     ],
 )
 def test_get_clickhouse_type_maps_supported_types(python_type: type, clickhouse_type: str):
     """Supported Python annotations should map to ClickHouse column types."""
     assert get_clickhouse_type(python_type) == clickhouse_type
+
+
+def test_create_table_sql_adds_event_id_as_uuid_column():
+    """ClickHouse event tables should store client-generated ids as UUID."""
+    sql = create_table_sql(Event, "events")
+
+    assert "event_id UUID" in sql
+
+
+def test_create_table_sql_uses_event_id_as_deduplication_key():
+    """ClickHouse event tables should be keyed by project and client event id."""
+    sql = create_table_sql(Event, "events")
+
+    assert "ENGINE = ReplacingMergeTree()" in sql
+    assert "ORDER BY (project_id, event_id)" in sql

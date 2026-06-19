@@ -4,6 +4,7 @@ import logging
 import signal
 from datetime import datetime
 from typing import List, Dict, Any
+from uuid import UUID
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 import clickhouse_connect
@@ -35,6 +36,20 @@ def parse_iso_datetime(value: str) -> datetime:
         value = f"{value[:-1]}+00:00"
 
     return datetime.fromisoformat(value)
+
+
+def build_clickhouse_event(raw_data: Dict[str, Any]) -> Dict[str, Any]:
+    event = dict(raw_data["event"])
+
+    if "event_id" not in event:
+        raise ValueError("Missing 'event_id'")
+
+    event["event_id"] = str(UUID(str(event["event_id"])))
+    event["project_id"] = raw_data.get("project_id")
+    event["timestamp"] = parse_iso_datetime(event["timestamp"])
+    event["received_at"] = parse_iso_datetime(raw_data.get("received_at"))
+
+    return event
 
 
 def setup_shutdown_event() -> asyncio.Event:
@@ -225,11 +240,7 @@ async def consume():
                                 )
                                 continue
 
-                            event = raw_data['event']
-                            event['project_id'] = raw_data.get('project_id')
-                            event['timestamp'] = parse_iso_datetime(event['timestamp'])
-                            event['received_at'] = parse_iso_datetime(
-                                raw_data.get('received_at'))
+                            event = build_clickhouse_event(raw_data)
                             writer.add_to_buffer(event)
                         except Exception as parse_error:
                             logger.error(
