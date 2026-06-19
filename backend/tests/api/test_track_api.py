@@ -170,6 +170,99 @@ async def test_track_returns_validation_error_contract_for_invalid_event(
 
 
 @pytest.mark.anyio
+async def test_track_returns_401_when_api_key_is_missing() -> None:
+    """Requests without X-API-Key should be rejected before tracking."""
+    producer = FakeKafkaProducer()
+    settings = build_test_settings()
+
+    async def override_db():
+        yield object()
+
+    async def override_kafka_producer() -> FakeKafkaProducer:
+        return producer
+
+    def override_settings() -> Settings:
+        return settings
+
+    api_main.app.dependency_overrides[api_main.get_db] = override_db
+    api_main.app.dependency_overrides[api_main.get_kafka_producer] = (
+        override_kafka_producer
+    )
+    api_main.app.dependency_overrides[api_main.get_settings] = override_settings
+
+    try:
+        transport = ASGITransport(app=api_main.app)
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            response = await client.post(
+                "/track",
+                json=valid_track_payload(),
+            )
+    finally:
+        api_main.app.dependency_overrides.clear()
+
+    body = response.json()
+    assert response.status_code == 401
+    assert body["error"]["code"] == "AUTH_REQUIRED"
+    assert body["error"]["message"] == "API key is required"
+    assert body["error"]["request_id"]
+    assert producer.messages == []
+
+
+@pytest.mark.anyio
+async def test_track_returns_403_when_api_key_is_invalid(monkeypatch) -> None:
+    """Unknown or inactive API keys should be rejected before Kafka publishing."""
+    producer = FakeKafkaProducer()
+    settings = build_test_settings()
+
+    async def override_db():
+        yield object()
+
+    async def override_kafka_producer() -> FakeKafkaProducer:
+        return producer
+
+    def override_settings() -> Settings:
+        return settings
+
+    async def fake_get_active_project_by_api_key(db, api_key, settings):
+        return None
+
+    monkeypatch.setattr(
+        api_main.projects,
+        "get_active_project_by_api_key",
+        fake_get_active_project_by_api_key,
+    )
+    api_main.app.dependency_overrides[api_main.get_db] = override_db
+    api_main.app.dependency_overrides[api_main.get_kafka_producer] = (
+        override_kafka_producer
+    )
+    api_main.app.dependency_overrides[api_main.get_settings] = override_settings
+
+    try:
+        transport = ASGITransport(app=api_main.app)
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            response = await client.post(
+                "/track",
+                json=valid_track_payload(),
+                headers={"X-API-Key": "ak_live_invalid"},
+            )
+    finally:
+        api_main.app.dependency_overrides.clear()
+
+    body = response.json()
+    assert response.status_code == 403
+    assert body["error"]["code"] == "API_KEY_INVALID"
+    assert body["error"]["message"] == "Invalid or inactive API key"
+    assert body["error"]["request_id"]
+    assert producer.messages == []
+
+
+@pytest.mark.anyio
 async def test_track_returns_kafka_unavailable_when_publish_fails() -> None:
     """Kafka connection failures should become a stable 503 API error."""
     producer = FakeKafkaProducer(error=KafkaConnectionError("Kafka is unavailable"))
