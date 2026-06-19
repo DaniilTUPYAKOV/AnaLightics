@@ -196,7 +196,7 @@ async def consume():
         bootstrap_servers=settings.kafka_bootstrap_servers
     )
 
-    writer = ClickHouseWriter(settings)
+    writer = await asyncio.to_thread(ClickHouseWriter, settings)
 
     await consumer.start()
     await dlq_producer.start()

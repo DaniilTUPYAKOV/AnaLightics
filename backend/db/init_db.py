@@ -194,7 +194,7 @@ async def main():
         raise e
 
     try:
-        init_clickhouse(settings)
+        await asyncio.to_thread(init_clickhouse, settings)
     except Exception as e:
         print(f"Error initializing ClickHouse: {e}")
         raise e
