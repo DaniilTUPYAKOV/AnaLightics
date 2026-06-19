@@ -37,7 +37,8 @@ api = [
 ]
 consumer = [
     "clickhouse-connect (>=0.14.1,<0.15.0)",
-    "aiokafka (>=0.13.0,<0.14.0)"
+    "aiokafka (>=0.13.0,<0.14.0)",
+    "redis (>=8.0.0,<9.0.0)"
 ]
 init_db = [
     "clickhouse-connect (>=0.14.1,<0.15.0)"

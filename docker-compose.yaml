@@ -163,6 +163,8 @@ services:
         condition: service_healthy
       clickhouse:
         condition: service_healthy
+      redis:
+        condition: service_healthy
       init_db:
         condition: service_completed_successfully
     networks:
@@ -176,12 +178,17 @@ services:
       CLICKHOUSE_TABLE: ${CLICKHOUSE_TABLE}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_DB: ${REDIS_DB}
+      REDIS_SOCKET_TIMEOUT_SECONDS: ${REDIS_SOCKET_TIMEOUT_SECONDS}
       CONSUMER_GROUP_ID: ${CONSUMER_GROUP_ID}
       CONSUMER_AUTO_OFFSET_RESET: ${CONSUMER_AUTO_OFFSET_RESET}
       CONSUMER_MAX_RETRIES: ${CONSUMER_MAX_RETRIES}
       CONSUMER_RETRY_DELAY: ${CONSUMER_RETRY_DELAY}
       CONSUMER_BATCH_SIZE: ${CONSUMER_BATCH_SIZE}
       CONSUMER_FLUSH_INTERVAL: ${CONSUMER_FLUSH_INTERVAL}
+      EVENT_DEDUPE_TTL_SECONDS: ${EVENT_DEDUPE_TTL_SECONDS}
 
 volumes:
   postgres_data:

@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     consumer_retry_delay: int = 2
     consumer_batch_size: int = 1000
     consumer_flush_interval: float = 5
+    event_dedupe_ttl_seconds: int = 86400
 
     @computed_field
     @property

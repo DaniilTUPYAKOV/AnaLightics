@@ -192,7 +192,7 @@ KAFKA_PRODUCER_RETRY_MAX_DELAY_SECONDS=1
 CLICKHOUSE_PORT=8123
 CLICKHOUSE_PORT_EXTERNAL=8123
 CLICKHOUSE_NATIVE_PORT=9000
-CLICKHOUSE_TABLE=events
+CLICKHOUSE_TABLE=analightics.events
 CLICKHOUSE_USER=analightics
 CLICKHOUSE_PASSWORD=analightics_password
 CLICKHOUSE_DB=analightics
@@ -203,6 +203,7 @@ CONSUMER_MAX_RETRIES=3
 CONSUMER_RETRY_DELAY=2
 CONSUMER_BATCH_SIZE=1000
 CONSUMER_FLUSH_INTERVAL=5.0
+EVENT_DEDUPE_TTL_SECONDS=86400
 
 API_PORT=8000
 API_KEY=secret-demo-key-123
@@ -486,7 +487,15 @@ ENGINE = ReplacingMergeTree()
 ORDER BY (project_id, event_id)
 ```
 
-Это делает систему готовой к дедупликации по `(project_id, event_id)`. Важно: `ReplacingMergeTree` схлопывает дубли асинхронно во время background merge. До merge обычный `SELECT` может временно видеть дубли; для строгого чтения нужен `FINAL`, materialized view или отдельный query/read layer.
+Основной high-load guard от дублей находится в consumer: перед добавлением события в ClickHouse batch consumer делает Redis `SET NX EX` по ключу `(project_id, event_id)`.
+
+```text
+event_dedupe:project:{project_id}:event:{event_id}
+```
+
+Если ключ создан, событие считается новым и записывается в ClickHouse. Если ключ уже существует, событие считается ближайшим retry-дублем и пропускается.
+
+`ReplacingMergeTree` остается вторым уровнем защиты на стороне хранения. Он может схлопнуть редкие дубли, которые прошли после истечения Redis TTL или после потери Redis state. При этом обычные аналитические запросы не обязаны постоянно использовать дорогой `FINAL`.
 
 ---
 
@@ -501,6 +510,7 @@ Consumer управляется через env-переменные:
 | `CONSUMER_MAX_RETRIES` | Количество retry-попыток |
 | `CONSUMER_RETRY_DELAY` | Базовая задержка между retry |
 | `CONSUMER_AUTO_OFFSET_RESET` | Политика чтения offset: `earliest` или `latest` |
+| `EVENT_DEDUPE_TTL_SECONDS` | TTL Redis-ключа для consumer-side дедупликации событий |
 
 ---
 
@@ -652,7 +662,7 @@ poetry run pytest
 - [ ] Добавить CI pipeline
 - [ ] Добавить нагрузочное тестирование
 - [ ] Добавить replay событий из DLQ
-- [ ] Добавить read model для дедуплицированных аналитических запросов
+- [ ] Добавить агрегированные аналитические витрины без `FINAL` для частых запросов
 
 ---
 

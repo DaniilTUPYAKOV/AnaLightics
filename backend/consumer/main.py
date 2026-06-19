@@ -3,12 +3,14 @@ import json
 import logging
 import signal
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import Any, Dict, List
 from uuid import UUID
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 import clickhouse_connect
 from clickhouse_connect.driver.exceptions import InternalError, OperationalError
+from redis.asyncio import Redis
+from redis.exceptions import RedisError
 from tenacity import (
     AsyncRetrying,
     before_sleep_log,
@@ -50,6 +52,22 @@ def build_clickhouse_event(raw_data: Dict[str, Any]) -> Dict[str, Any]:
     event["received_at"] = parse_iso_datetime(raw_data.get("received_at"))
 
     return event
+
+
+def build_event_dedupe_key(project_id: str, event_id: str) -> str:
+    return f"event_dedupe:project:{project_id}:event:{event_id}"
+
+
+async def is_duplicate_event(
+    redis: Redis,
+    project_id: str,
+    event_id: str,
+    ttl_seconds: int,
+) -> bool:
+    key = build_event_dedupe_key(project_id, event_id)
+    was_set = await redis.set(key, "1", nx=True, ex=ttl_seconds)
+
+    return was_set is None
 
 
 def setup_shutdown_event() -> asyncio.Event:
@@ -197,6 +215,14 @@ class ClickHouseWriter:
 async def consume():
     settings = get_settings()
     shutdown_event = setup_shutdown_event()
+    redis: Redis | None = Redis(
+        host=settings.redis_host,
+        port=settings.redis_port,
+        db=settings.redis_db,
+        socket_timeout=settings.redis_socket_timeout_seconds,
+        socket_connect_timeout=settings.redis_socket_timeout_seconds,
+        decode_responses=True,
+    )
 
     consumer = AIOKafkaConsumer(
         settings.event_topic,
@@ -215,6 +241,13 @@ async def consume():
 
     await consumer.start()
     await dlq_producer.start()
+    try:
+        await redis.ping()
+        logger.info("Redis dedupe client started")
+    except RedisError as e:
+        logger.warning("Redis dedupe unavailable, continuing without it: %s", e)
+        await redis.aclose()
+        redis = None
     logger.info("Consumer & DLQ Producer started")
 
     try:
@@ -223,6 +256,7 @@ async def consume():
                 timeout_ms=1000,
                 max_records=settings.consumer_batch_size,
             )
+            should_commit_processed_offsets = False
 
             for tp, messages in result.items():
                 if messages:
@@ -238,9 +272,29 @@ async def consume():
                                     "Missing 'event' key",
                                     settings,
                                 )
+                                should_commit_processed_offsets = True
                                 continue
 
                             event = build_clickhouse_event(raw_data)
+                            if redis is not None:
+                                try:
+                                    if await is_duplicate_event(
+                                        redis,
+                                        event["project_id"],
+                                        event["event_id"],
+                                        settings.event_dedupe_ttl_seconds,
+                                    ):
+                                        logger.info(
+                                            "Skipping duplicate event: %s",
+                                            event["event_id"],
+                                        )
+                                        should_commit_processed_offsets = True
+                                        continue
+                                except RedisError as dedupe_error:
+                                    logger.error(
+                                        "Redis dedupe failed, writing event anyway: %s",
+                                        dedupe_error,
+                                    )
                             writer.add_to_buffer(event)
                         except Exception as parse_error:
                             logger.error(
@@ -252,6 +306,7 @@ async def consume():
                                 settings,
                             )
                             logger.info("Bad message sent to DLQ. Skipping.")
+                            should_commit_processed_offsets = True
                             continue
 
             time_since_flush = (
@@ -261,6 +316,10 @@ async def consume():
                 time_since_flush >= settings.consumer_flush_interval and writer.buffer
             ):
                 await writer.flush(dlq_producer)
+                await consumer.commit()
+                should_commit_processed_offsets = False
+
+            if should_commit_processed_offsets and not writer.buffer:
                 await consumer.commit()
 
         logger.info("Shutdown requested. Stopping Consumer...")
@@ -277,6 +336,8 @@ async def consume():
 
         await consumer.stop()
         await dlq_producer.stop()
+        if redis is not None:
+            await redis.aclose()
 
 if __name__ == "__main__":
     asyncio.run(consume())

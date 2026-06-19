@@ -2,7 +2,33 @@ import datetime
 
 import pytest
 
-from backend.consumer.main import build_clickhouse_event, parse_iso_datetime
+from backend.consumer.main import (
+    build_clickhouse_event,
+    build_event_dedupe_key,
+    is_duplicate_event,
+    parse_iso_datetime,
+)
+
+DEDUPE_KEY = (
+    "event_dedupe:project:00000000-0000-0000-0000-000000000001:"
+    "event:00000000-0000-0000-0000-000000000003"
+)
+
+
+class FakeRedis:
+    def __init__(self, result: bool | None) -> None:
+        self.result = result
+        self.calls: list[tuple[str, str, bool, int]] = []
+
+    async def set(self, key: str, value: str, nx: bool, ex: int) -> bool | None:
+        self.calls.append((key, value, nx, ex))
+        return self.result
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    """Consumer async helper tests should use asyncio."""
+    return "asyncio"
 
 
 def test_parse_iso_datetime_accepts_z_suffix_as_utc():
@@ -85,3 +111,52 @@ def test_build_clickhouse_event_rejects_missing_event_id():
                 },
             }
         )
+
+
+def test_build_event_dedupe_key_uses_project_and_event_id():
+    """Dedupe keys should be scoped by project and client-generated event id."""
+    assert (
+        build_event_dedupe_key(
+            "00000000-0000-0000-0000-000000000001",
+            "00000000-0000-0000-0000-000000000003",
+        )
+        == DEDUPE_KEY
+    )
+
+
+@pytest.mark.anyio
+async def test_is_duplicate_event_returns_false_for_new_event():
+    """Redis SET NX success means the event has not been seen recently."""
+    redis = FakeRedis(result=True)
+
+    is_duplicate = await is_duplicate_event(
+        redis,
+        "00000000-0000-0000-0000-000000000001",
+        "00000000-0000-0000-0000-000000000003",
+        ttl_seconds=86400,
+    )
+
+    assert is_duplicate is False
+    assert redis.calls == [
+        (
+            DEDUPE_KEY,
+            "1",
+            True,
+            86400,
+        )
+    ]
+
+
+@pytest.mark.anyio
+async def test_is_duplicate_event_returns_true_for_seen_event():
+    """Redis SET NX miss means the event is a recent duplicate."""
+    redis = FakeRedis(result=None)
+
+    is_duplicate = await is_duplicate_event(
+        redis,
+        "00000000-0000-0000-0000-000000000001",
+        "00000000-0000-0000-0000-000000000003",
+        ttl_seconds=86400,
+    )
+
+    assert is_duplicate is True
