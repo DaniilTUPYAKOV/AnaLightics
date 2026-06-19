@@ -25,7 +25,8 @@ build-backend = "poetry.core.masonry.api"
 dev = [
     "ruff (>=0.15.7,<0.16.0)",
     "mypy (>=1.19.1,<2.0.0)",
-    "pytest (>=9.0.2,<10.0.0)"
+    "pytest (>=9.0.2,<10.0.0)",
+    "httpx (>=0.28.1,<0.29.0)"
 ]
 api = [
     "fastapi (>=0.135.2,<0.136.0)",
