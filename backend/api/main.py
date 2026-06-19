@@ -49,6 +49,7 @@ from backend.model.schemas import (
     APIKeyCreated,
     APIKeyRevoked,
     APIKeyRotate,
+    ErrorResponse,
     Event,
 )
 from backend.repositories import projects
@@ -64,6 +65,27 @@ KAFKA_RETRYABLE_ERRORS = (
     AioKafkaTimeoutError,
     asyncio.TimeoutError,
 )
+
+
+def error_response(description: str) -> dict:
+    return {
+        "model": ErrorResponse,
+        "description": description,
+        "headers": {
+            "X-Request-ID": {
+                "description": "Server-generated request identifier for support and logs",
+                "schema": {"type": "string"},
+            }
+        },
+    }
+
+
+COMMON_ERROR_RESPONSES = {
+    401: error_response("API key is missing"),
+    403: error_response("API key is invalid, inactive, or not allowed"),
+    422: error_response("Request validation failed"),
+    500: error_response("Unexpected server error"),
+}
 
 
 def log_kafka_retry(retry_state) -> None:
@@ -310,7 +332,19 @@ async def send_event_to_kafka(
             )
 
 
-@app.post("/track", response_model=APIKeyCheck)
+@app.post(
+    "/track",
+    response_model=APIKeyCheck,
+    tags=["Tracking"],
+    operation_id="trackEvent",
+    summary="Track analytics event",
+    responses={
+        **COMMON_ERROR_RESPONSES,
+        429: error_response("Project rate limit exceeded"),
+        503: error_response("Kafka, Redis, or service dependency is unavailable"),
+        504: error_response("Kafka send timed out"),
+    },
+)
 async def track_event(
     request: Request,
     event: Event,
@@ -383,7 +417,14 @@ async def track_event(
         raise InternalKafkaError("Internal error while sending event to Kafka") from e
 
 
-@app.post("/projects/{project_id}/api-keys", response_model=APIKeyCreated)
+@app.post(
+    "/projects/{project_id}/api-keys",
+    response_model=APIKeyCreated,
+    tags=["API Keys"],
+    operation_id="createProjectApiKey",
+    summary="Create project API key",
+    responses=COMMON_ERROR_RESPONSES,
+)
 async def create_api_key(
     project_id: UUID,
     api_key_data: APIKeyCreate,
@@ -413,6 +454,13 @@ async def create_api_key(
 @app.post(
     "/projects/{project_id}/api-keys/{api_key_id}/rotate",
     response_model=APIKeyCreated,
+    tags=["API Keys"],
+    operation_id="rotateProjectApiKey",
+    summary="Rotate project API key",
+    responses={
+        **COMMON_ERROR_RESPONSES,
+        404: error_response("Active API key not found"),
+    },
 )
 async def rotate_api_key(
     project_id: UUID,
@@ -450,6 +498,13 @@ async def rotate_api_key(
 @app.post(
     "/projects/{project_id}/api-keys/{api_key_id}/revoke",
     response_model=APIKeyRevoked,
+    tags=["API Keys"],
+    operation_id="revokeProjectApiKey",
+    summary="Revoke project API key",
+    responses={
+        **COMMON_ERROR_RESPONSES,
+        404: error_response("Active API key not found"),
+    },
 )
 async def revoke_api_key(
     project_id: UUID,
@@ -473,7 +528,12 @@ async def revoke_api_key(
     )
 
 
-@app.get("/health")
+@app.get(
+    "/health",
+    tags=["Health"],
+    operation_id="getHealth",
+    summary="Get service health status",
+)
 async def health_check(request: Request):
     status = {"status": "healthy", "kafka": "connected", "redis": "connected"}
 
@@ -497,7 +557,13 @@ async def health_check(request: Request):
     return status
 
 
-@app.get("/ready")
+@app.get(
+    "/ready",
+    tags=["Health"],
+    operation_id="getReadiness",
+    summary="Get service readiness status",
+    responses={503: error_response("Service dependency is not ready")},
+)
 async def readiness_check(request: Request):
     if getattr(request.app.state, "is_shutting_down", False):
         raise ServiceUnavailableError("Service is shutting down")
