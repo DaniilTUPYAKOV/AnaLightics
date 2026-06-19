@@ -26,6 +26,20 @@ class FakeKafkaProducer:
         self.messages.append((topic, message))
 
 
+class FakeRedis:
+    def __init__(self, request_count: int) -> None:
+        self.request_count = request_count
+        self.incremented_keys: list[str] = []
+        self.expirations: list[tuple[str, int]] = []
+
+    async def incr(self, key: str) -> int:
+        self.incremented_keys.append(key)
+        return self.request_count
+
+    async def expire(self, key: str, ttl_seconds: int) -> None:
+        self.expirations.append((key, ttl_seconds))
+
+
 @pytest.fixture
 def anyio_backend() -> str:
     """API tests should use asyncio as the async backend."""
@@ -207,3 +221,59 @@ async def test_track_returns_kafka_unavailable_when_publish_fails() -> None:
     assert body["error"]["code"] == "KAFKA_UNAVAILABLE"
     assert body["error"]["message"] == "Event ingestion is temporarily unavailable"
     assert body["error"]["request_id"]
+
+
+@pytest.mark.anyio
+async def test_track_returns_429_when_rate_limit_is_exceeded() -> None:
+    """Exceeded project RPM limits should stop /track before Kafka publishing."""
+    producer = FakeKafkaProducer()
+    redis = FakeRedis(request_count=2)
+    settings = build_test_settings()
+
+    async def override_current_project() -> ProjectContext:
+        return ProjectContext(
+            project_id=PROJECT_ID,
+            api_key_id=API_KEY_ID,
+            rate_limit_per_minute=1,
+        )
+
+    async def override_kafka_producer() -> FakeKafkaProducer:
+        return producer
+
+    async def override_redis() -> FakeRedis:
+        return redis
+
+    def override_settings() -> Settings:
+        return settings
+
+    api_main.app.dependency_overrides[api_main.get_current_project] = (
+        override_current_project
+    )
+    api_main.app.dependency_overrides[api_main.get_kafka_producer] = (
+        override_kafka_producer
+    )
+    api_main.app.dependency_overrides[api_main.get_redis] = override_redis
+    api_main.app.dependency_overrides[api_main.get_settings] = override_settings
+
+    try:
+        transport = ASGITransport(app=api_main.app)
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            response = await client.post(
+                "/track",
+                json=valid_track_payload(),
+                headers={"X-API-Key": "ak_live_test"},
+            )
+    finally:
+        api_main.app.dependency_overrides.clear()
+
+    body = response.json()
+    assert response.status_code == 429
+    assert body["error"]["code"] == "RATE_LIMIT_EXCEEDED"
+    assert body["error"]["message"] == "Too many events"
+    assert body["error"]["request_id"]
+    assert len(redis.incremented_keys) == 1
+    assert redis.expirations == []
+    assert producer.messages == []
