@@ -10,6 +10,7 @@ class Event(BaseModel):
         json_schema_extra={
             "example": {
                 "event_id": "00000000-0000-0000-0000-000000000003",
+                "session_id": "00000000-0000-0000-0000-000000000004",
                 "url": "https://example.com/catalog",
                 "title": "Catalog",
                 "referrer": None,
@@ -23,6 +24,7 @@ class Event(BaseModel):
     )
 
     event_id: UUID
+    session_id: UUID | None = None  # Идентификатор сессии пользователя
     url: HttpUrl  # Полный URL страницы, на которой произошло событие
     title: str = Field(min_length=1, max_length=300)  # Заголовок текущей страницы
     referrer: HttpUrl | None = None  # URL страницы-источника
