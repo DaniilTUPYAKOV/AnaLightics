@@ -9,6 +9,7 @@ class Event(BaseModel):
         extra="forbid",
         json_schema_extra={
             "example": {
+                "session_id": "00000000-0000-0000-0000-000000000002",
                 "event_id": "00000000-0000-0000-0000-000000000003",
                 "url": "https://example.com/catalog",
                 "title": "Catalog",
@@ -21,7 +22,7 @@ class Event(BaseModel):
             }
         },
     )
-
+    session_id: UUID
     event_id: UUID
     url: HttpUrl  # Полный URL страницы, на которой произошло событие
     title: str = Field(min_length=1, max_length=300)  # Заголовок текущей страницы
