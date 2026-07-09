@@ -9,7 +9,6 @@ class Event(BaseModel):
         extra="forbid",
         json_schema_extra={
             "example": {
-                "session_id": "00000000-0000-0000-0000-000000000002",
                 "event_id": "00000000-0000-0000-0000-000000000003",
                 "url": "https://example.com/catalog",
                 "title": "Catalog",
