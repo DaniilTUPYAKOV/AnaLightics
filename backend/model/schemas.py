@@ -21,7 +21,6 @@ class Event(BaseModel):
             }
         },
     )
-    session_id: UUID
     event_id: UUID
     url: HttpUrl  # Полный URL страницы, на которой произошло событие
     title: str = Field(min_length=1, max_length=300)  # Заголовок текущей страницы
